@@ -1,0 +1,2 @@
+- run_evol: Evolves a given (u,v) velocity field using Kolmogorov forcing with GHOST HD using double precision.
+- run_lyap: Finds lyapunov exponents of a given (u,v) velocity field
