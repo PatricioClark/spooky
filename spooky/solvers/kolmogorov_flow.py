@@ -1,6 +1,8 @@
 ''' 2D Kolmogorov flow solver '''
 
-import numpy as np
+import jax.numpy as np
+from jax import jit
+from functools import partial
 import os
 
 from .pseudospectral import PseudoSpectral
@@ -34,6 +36,7 @@ class KolmogorovFlow(PseudoSpectral):
         self.fy = np.zeros_like(self.fx, dtype=complex)
         self.fx, self.fy = self.grid.inc_proj([self.fx, self.fy])
 
+    @partial(jit, static_argnums=(0,))
     def rkstep(self, fields, prev, oo, dt):
         # Unpack
         fu, fv = fields
@@ -67,10 +70,10 @@ class KolmogorovFlow(PseudoSpectral):
             )
 
         # de-aliasing
-        fu[self.grid.zero_mode] = 0.0 
-        fv[self.grid.zero_mode] = 0.0 
-        fu[self.grid.dealias_modes] = 0.0 
-        fv[self.grid.dealias_modes] = 0.0
+        fu = fu.at[self.grid.zero_mode].set(0.0)
+        fu = fu.at[self.grid.dealias_modes].set(0.0)
+        fv = fv.at[self.grid.zero_mode].set(0.0)
+        fv = fv.at[self.grid.dealias_modes].set(0.0)
 
         return [fu, fv]
 

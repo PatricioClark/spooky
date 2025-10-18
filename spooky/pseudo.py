@@ -1,5 +1,5 @@
 ''' Definitions of 1- and 2-D periodic grids '''
-import numpy as np
+import jax.numpy as np
 
 class Grid1D:
     def __init__(self, pm):
@@ -125,10 +125,11 @@ class Grid2D(Grid1D):
         self.zero_mode = (0, 0)
         self.dealias_modes = (kr > 1/9)
 
-        with np.errstate(divide='ignore', invalid='ignore'):
-            self.pxx = np.nan_to_num(1.0 - self.kx**2/k2)
-            self.pyy = np.nan_to_num(1.0 - self.ky**2/k2)
-            self.pxy = np.nan_to_num(- self.kx*self.ky/k2)
+        # Incompressiblity projector, careful not to divide by zero
+        kk2 = k2.at[self.zero_mode].set(1.0)
+        self.pxx = 1.0 - self.kx**2/kk2
+        self.pyy = 1.0 - self.ky**2/kk2
+        self.pxy = - self.kx*self.ky/kk2
 
     def translate2D(self, fields, sx, sy):
         # Forward transform

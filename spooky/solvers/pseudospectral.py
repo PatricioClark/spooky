@@ -1,5 +1,5 @@
 import abc
-import numpy as np
+import jax.numpy as np
 
 from .solver import Solver
 from .. import pseudo as ps
@@ -25,7 +25,7 @@ class PseudoSpectral(Solver, abc.ABC):
         Nt = int(T/self.pm.dt)
         for step in range(Nt+1):
             # Store previous time step
-            prev = np.copy(fields)
+            prev = fields
 
             # Write outputs
             if write_outputs:
