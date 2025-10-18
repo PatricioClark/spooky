@@ -194,17 +194,22 @@ class Grid3D(Grid1D):
         kj = np.fft.fftfreq(pm.Ny, 1/pm.Ny)
         kl = np.fft.rfftfreq(pm.Nz, 1/pm.Nz)
         ki, kj, kl = np.meshgrid(ki, kj, kl, indexing='ij')
-        kr = (ki/pm.Nx)**2 + (kj/pm.Ny)**2 + (kz/pm.Nz)**2
+        kr = (ki/pm.Nx)**2 + (kj/pm.Ny)**2 + (kl/pm.Nz)**2
 
         self.xx = xx
         self.yy = yy
+        self.zz = zz
         self.dy = dy
+        self.dz = dz
 
         self.kx = kx
         self.ky = ky
+        self.kz = kz
+
         self.ki = ki
         self.kj = kj
-        self.kz = kz
+        self.kl = kl
+
         self.k2 = k2
         self.kk = kk
         self.kr = kr
@@ -212,19 +217,18 @@ class Grid3D(Grid1D):
         self.N = pm.Nx*pm.Ny*pm.Nz
         self.shape = (pm.Nx, pm.Ny, pm.Nz)
 
-
         # Norm, de-aliasing and solenoidal mode proyector
         self.norm = 1.0/(pm.Nx**2*pm.Ny**2*pm.Nz**2)
         self.zero_mode = (0, 0, 0)
         self.dealias_modes = (self.kr > 1/9)
 
-        # with np.errstate(divide='ignore', invalid='ignore'):
-        #     self.pxx = np.nan_to_num(1.0 - self.kx**2/k2)
-        #     self.pyy = np.nan_to_num(1.0 - self.ky**2/k2)
-        #     self.pzz = np.nan_to_num(1.0 - self.kz**2/k2)
-        #     #TODO: check if this is correct
-        #     self.pxy = np.nan_to_num(- self.kx*self.ky/k2)
-        #     self.pxyz = np.nan_to_num(self.kx*self.ky*self.kz/k2)
+        kk2 = k2.at[self.zero_mode].set(1.0)
+        self.pxx = 1.0 - self.kx**2/kk2
+        self.pyy = 1.0 - self.ky**2/kk2
+        self.pzz = 1.0 - self.kz**2/kk2
+        self.pxy = - self.kx*self.ky/kk2
+        self.pxz = - self.kx*self.kz/kk2
+        self.pyz = - self.ky*self.kz/kk2
 
     def translate3D(self, fields, sx=0., sy=0., sz=0.):
         # Forward transform
@@ -235,9 +239,11 @@ class Grid3D(Grid1D):
         fields = [self.inverse(ff) for ff in f]
         return fields
 
-    # def inc_proj(self, fields):
-    #     #TODO: fix
-    #     ''' Project onto solenoidal modes '''
-    #     fu = fields[0]
-    #     fv = fields[1]
-    #     return self.pxx*fu + self.pxy*fv, self.pxy*fu + self.pyy*fv
+    def inc_proj(self, fields):
+        ''' Project onto solenoidal modes '''
+        fu = fields[0]
+        fv = fields[1]
+        fw = fields[2]
+        return (self.pxx*fu + self.pxy*fv + self.pxz*fw,
+                self.pxy*fu + self.pyy*fv + self.pyz*fw,
+                self.pxz*fu + self.pyz*fv + self.pzz*fw)
