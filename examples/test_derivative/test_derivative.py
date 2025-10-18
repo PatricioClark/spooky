@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from types import SimpleNamespace
 
 # Import corresponding module
-import pySPEC.pseudo as ps
+import spooky.pseudo as ps
 
 # 1D -------------------------------------------------
 

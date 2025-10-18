@@ -7,8 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from types import SimpleNamespace
 
-import pySPEC as ps
-from pySPEC.solvers import KuramotoSivashinsky
+import spooky as ps
+from spooky.solvers import KuramotoSivashinsky
 
 # Parse JSON into an object with attributes corresponding to dict keys.
 pm = json.load(open('params.json', 'r'), object_hook=lambda d: SimpleNamespace(**d))

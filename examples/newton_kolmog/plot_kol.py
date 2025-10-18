@@ -7,7 +7,7 @@ from matplotlib.lines import Line2D
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MaxNLocator
 
-from pySPEC.solvers import KolmogorovFlow
+from spooky.solvers import KolmogorovFlow
 import params as pm
 
 pm.Lx = 2*np.pi*pm.L

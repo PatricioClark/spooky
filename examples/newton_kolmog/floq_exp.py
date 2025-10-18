@@ -10,9 +10,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-import pySPEC as ps
-from pySPEC.solvers import KolmogorovFlow
-from pySPEC.methods import DynSys
+import spooky as ps
+from spooky.solvers import KolmogorovFlow
+from spooky.methods import DynSys
 import params as pm
 
 pm.Lx = 2*np.pi*pm.L

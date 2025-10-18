@@ -1,11 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-        name='pySPEC',
+        name='spooky',
         version='0.1',
         packages=find_packages(),
         description='Tools and algorithms from pseudo-spectral methods',
-        url='https://github.com/PatricioClark/pySPEC',
+        url='https://github.com/PatricioClark/spooky',
         author='Patricio Clark Di Leoni',
         author_email='pclarkdileoni@udesa.edu.ar',
         license='MIT',

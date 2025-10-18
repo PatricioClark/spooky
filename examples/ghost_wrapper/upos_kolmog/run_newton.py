@@ -6,9 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-import pySPEC as ps
-from pySPEC.solvers import GHOST
-from pySPEC.methods import DynSys
+import spooky as ps
+from spooky.solvers import GHOST
+from spooky.methods import DynSys
 import params as pm
 
 pm.Lx = 2*np.pi*pm.L
