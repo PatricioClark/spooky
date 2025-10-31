@@ -11,5 +11,5 @@ Collection of algorithms and tools based on pseudospectral methods for fluid flo
 
 ### Installation
 ```
-pip install spooky
+pip install spookyflows
 ```
