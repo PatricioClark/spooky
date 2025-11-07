@@ -1,38 +1,24 @@
 from .krylov import GMRES, backsub, arnoldi_eig
+from .parameters import Parameters
 import os
 import numpy as np
 
+"""
+dyn_sys.py
+----------
+Implements the Newton-Krylov method for computing steady states and periodic orbits
+in PDE systems (e.g. Kolmogorov flow, Boussinesq equations).
+
+References:
+  - Chandler & Kerswell (2013)
+  - Viswanath (2007)
+"""
+
 class DynSys():
-    def __init__(self, pm, solver):
-        '''
-        Parameters:
-        ----------
-            pm: parameters dictionary
-            solver: solver object
-        '''
+    def __init__(self, pm:Parameters, solver):
         self.pm = pm
         self.solver = solver
         self.grid = solver.grid
-
-    def load_ic(self):
-        ''' Load initial conditions '''
-        if not self.pm.restart_iN:
-            # Start Newton Solver from initial guess
-            fields = self.solver.load_fields(self.pm.input, self.pm.stat)
-
-            T, sx = self.pm.T, self.pm.sx
-            # Create directories
-            self.mkdirs()
-            self.write_header()
-        else:
-            # Restart Newton Solver from last iteration
-            restart_path = f'output/iN{self.pm.restart_iN:02}/'
-            fields = self.solver.load_fields(restart_path, 0)
-            T, sx = self.get_restart_values(self.pm.restart_iN)
-
-        U = self.flatten(fields)
-        X = self.form_X(U, T, sx)
-        return X
 
     def form_X(self, U, T=None, sx=None, lda = None):
         ''' Form X vector from fields U, T, sx and lda (if applicable) '''
@@ -45,7 +31,7 @@ class DynSys():
             X = np.append(X, lda)
         return X
 
-    def unpack_X(self, X, arclength = False):
+    def unpack_X(self, X):
         '''X could contain extra params sx and lda if searching for RPOs (pm.sx != 0) or using arclength continuation'''
 
         # Determine size of U
@@ -54,6 +40,7 @@ class DynSys():
         else:
             dim_U = self.grid.N * self.solver.num_fields
 
+        # Extract U, T, sx, lda from X
         U = X[:dim_U]
         idx = dim_U
 
@@ -65,23 +52,23 @@ class DynSys():
 
         sx = X[idx] if (self.pm.sx is not None) else 0.
 
-        if not arclength:
+        if not self.pm.arclength:
             return U, T, sx
         else:
             lda = X[-1]
             return U, T, sx, lda
 
-    def get_restart_values(self, restart, arclength = False, iA:int|None = None ):
-        ''' Get values from last Newton iteration of T and sx from solver.txt '''
-        # Convert iA to a string prefix if it's provided
+    def get_restart_values(self, restart, iA: int | None = None):
+        """Get values from last Newton iteration of T and sx from solver.txt"""
         suffix = f'{iA:02}' if iA is not None else ''
-        fname = f'prints{suffix}/solver.txt'
-        iters,T,sx = np.loadtxt(fname, delimiter = ',', skiprows = 1, unpack = True, usecols = (0,2,3))
-        idx_restart = np.argwhere(iters==restart)[0][0] #in case more than 1 restart is needed find row with last iter
-        values =  [T[idx_restart], sx[idx_restart]]
-
-        if arclength:
-            lda = np.loadtxt(fname, delimiter = ',', skiprows = 1, unpack = True, usecols = 5)
+        # Use parameterized print directory
+        base_dir = self.pm.newton_dir or "prints"
+        fname = os.path.join(f"{base_dir}{suffix}", "solver.txt")
+        iters, T, sx = np.loadtxt(fname, delimiter=',', skiprows=1, unpack=True, usecols=(0, 2, 3))
+        idx_restart = np.argwhere(iters == restart)[0][0]
+        values = [T[idx_restart], sx[idx_restart]]
+        if self.pm.arclength:
+            lda = np.loadtxt(fname, delimiter=',', skiprows=1, unpack=True, usecols=5)
             values.append(lda[idx_restart])
         return values
 
@@ -116,15 +103,26 @@ class DynSys():
         return wrapper
 
     @flatten_dec
-    def evolve(self, U, T, save = False, iN = 0, iA:int|None = None):
+    def evolve(self, U, T, save_outputs = False, save_balance = False, iN = 0, iA:int|None = None):
         '''Evolves fields U in time T'''
-        if save:
-            suffix = f'{iA:02}' if iA is not None else ''
-            dir_iN = f'iN{iN:02}/'
-            return self.solver.evolve(U, T, bstep = self.pm.bstep, ostep = self.pm.ostep,\
-                bpath = f'balance{suffix}/{dir_iN}', opath = f'output{suffix}/{dir_iN}')
-        else:
-            return self.solver.evolve(U, T)
+        # Determine steps if saving outputs
+        ostep = self.pm.ostep if save_outputs else None
+        bstep = self.pm.bstep if save_balance else None
+
+        # Determine paths if saving outputs
+        odir = self.pm.output_dir 
+        bdir = self.pm.balance_dir
+        if odir is not None:
+            odir = odir if iA is None else os.path.join(odir, f'iA{iA:02}')
+            odir = os.path.join(odir, f'iN{iN:02}')
+            os.makedirs(odir, exist_ok=True)
+
+        if bdir is not None:
+            bdir = bdir if iA is None else os.path.join(bdir, f'iA{iA:02}')
+            bdir = os.path.join(bdir, f'iN{iN:02}')
+            os.makedirs(bdir, exist_ok=True)
+
+        return self.solver.evolve(U, T, bstep = bstep, ostep = ostep, bpath = bdir, opath = odir)
 
     @flatten_dec
     def translate(self, U, sx):
@@ -175,8 +173,9 @@ class DynSys():
         U, T, sx = self.unpack_X(X)
 
         # Evolve fields and save output
-        self.mkdirs_iN(iN-1) # save output and bal from previous iN
-        UT = self.evolve(U, T, save = True, iN = iN-1)
+        save_out = True if self.pm.save_outputs == 'all' else False
+        save_bal = True if self.pm.save_balance == 'all' else False
+        UT = self.evolve(U, T, save_out, save_bal, iN=iN-1)
 
         # Translate UT by sx and calculate derivatives
         if self.pm.sx is not None:
@@ -202,8 +201,7 @@ class DynSys():
             ''' Applies A (extended Jacobian) to vector X^t  '''
             dU, dT, ds = self.unpack_X(dX)
 
-            # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = 1e-7*self.norm(U)/self.norm(dU)
+            epsilon = self.pm.eps0*self.norm(U)/self.norm(dU)
 
             # Perturb U by epsilon*dU and apply solenoidal projection if sp1 = True
             U_pert = self.apply_proj(U, epsilon*dU, self.pm.sp1)
@@ -236,7 +234,12 @@ class DynSys():
 
     def run_newton(self, X):
         '''Iterates Newton-GMRes solver until convergence'''
-        for iN in range(self.pm.restart_iN+1, self.pm.N_newt):
+        pm = self.pm
+        if self.pm.restart_iN == 0:
+            self.mkdirs()
+            self.write_header_newton()
+
+        for iN in range(pm.restart_iN+1, pm.N_newt):
             # Unpack X
             U, T, sx = self.unpack_X(X)
 
@@ -248,11 +251,12 @@ class DynSys():
             F = self.norm(b) #||b|| = ||F||: rootsearch function
 
             # Write to txts
-            self.write_prints(iN, F, U, sx, T)
+            self.write_newton(iN, F, U, sx, T)
+            self.write_headers(iN)
 
             # Perform GMRes iteration
             # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, iN, self.pm.glob_method)
+            H, beta, Q = GMRES(apply_A, b, pm.N_gmres, pm.tol_gmres, iN, pm.glob_method)
 
             # Perform hookstep to adjust solution to trust region
             X, F_new, UT = self.hookstep(X, H, beta, Q, iN)
@@ -261,23 +265,25 @@ class DynSys():
             U, T, sx = self.unpack_X(X)
 
             # Select different initial condition from orbit if solution is not converging
-            if ((F-F_new)/F) < self.pm.tol_nudge:
-                with open('prints/nudge.txt', 'a') as file:
-                    file.write(f'iN = {iN}. frac_nudge = {self.pm.frac_nudge}\n')
+            if ((F-F_new)/F) < pm.tol_nudge:
                 U = self.evolve(U, T*self.pm.frac_nudge)
 
             # Termination condition
-            if (F_new < self.pm.tol_newt) and ((F-F_new)/F < self.pm.tol_improve):
+            if (F_new < pm.tol_newt) and ((F-F_new)/F < pm.tol_improve):
 
-                self.mkdirs_iN(iN)
-                UT = self.evolve(U, T, save = True, iN = iN)
-                if self.pm.sx is not None:
+                # Final evolve to save outputs and balance
+                save_out = True if self.pm.save_outputs in ('all', 'last') else False
+                save_bal = True if self.pm.save_balance in ('all', 'last') else False
+                UT = self.evolve(U, T, save_out, save_bal, iN=iN)
+
+                if pm.sx is not None:
                     UT = self.translate(UT, sx)
                 b = self.form_b(U, UT)
                 F = self.norm(b) #||b|| = ||F||: rootsearch function
                 # Write to txts
-                self.write_prints(iN+1, F, U, sx, T)
+                self.write_newton(iN+1, F, U, sx, T)
                 break
+
 
     def hookstep(self, X, H, beta, Q, iN, arclength:dict|None = None):
         ''' Performs hookstep on solution given by GMRes untill new |F| is less than previous |F| (or max iter of hookstep is reached) '''
@@ -367,9 +373,7 @@ class DynSys():
                 y_norm = self.norm(y0)
                 Delta0 = y_norm #Initial trust region
 
-                suffix = f'{iA:02}' if iA is not None else ''
-                with open(f'prints{suffix}/hookstep/extra_iN{iN:02}.txt', 'a') as file:
-                    file.write(f'{Delta0},{mu},{y_norm},0\n')
+                self.write_trust_region(iN, Delta0, mu, y0, A_, iA)
 
                 mu = self.pm.mu0 #Initialize first nonzero value of mu
                 return y0, mu
@@ -395,97 +399,109 @@ class DynSys():
         os.makedirs(path, exist_ok=True)
 
     def mkdirs(self, iA:int | None = None):
-        ''' Make directories for solver
-        if iA is given then outputs are saved in a specific arclength iteration'''
-
-        # Convert iA to a string prefix if it's provided
+        """Make directories for solver; if iA is given then outputs are saved in a specific arclength iteration."""
         suffix = f'{iA:02}' if iA is not None else ''
-
-        dirs = ['output', 'balance', 'prints']
-        dirs = [dir_+ suffix for dir_ in dirs]
-
-        prints_dir = dirs[-1]
-        dirs.extend ([prints_dir+dir_ for dir_ in ('/error_gmres', '/hookstep', '/apply_A')])
-
-        if self.solver.solver == 'BOUSS' or self.solver.solver == 'ROTH':
-            dirs.append('bin_tmp')
-
-        for dir_ in dirs:
-            self.mkdir(dir_)
+        dirs = [
+            self.pm.output_dir,
+            self.pm.balance_dir,
+        ]
+        for d in filter(None, dirs):
+            self.mkdir(f"{d}{suffix}")
 
     def mkdirs_iN(self, iN, iA:int | None = None):
         ''' Directories for specific Newton iteration
         if iA is given then outputs are saved in a specific arclength iteration'''
 
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+        if iA is not None:
+            path = os.path.join(f'iA{iA:02}', f'iN{iN:02}')
+        else:
+            path = f'iN{iN:02}'
 
-        dirs = [f'output{suffix}/iN{iN:02}', f'balance{suffix}/iN{iN:02}']
+        opath = os.path.join(self.pm.output_dir, path)
+        self.mkdir(opath)
 
-        for dir_ in dirs:
-            self.mkdir(dir_)
+        if self.pm.balance_dir is not None:
+            bpath = os.path.join(self.pm.balance_dir, path)
+            self.mkdir(bpath)
 
-    def write_header(self, arclength = False, iA:int|None=None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+    def _get_path(self, base_dir: str | None, *parts, iA: int | None = None):
+        """Safely join base_dir with optional suffix and subpaths.
+        Adds iA (arclength iteration) suffix if provided."""
+        if base_dir is None:
+            return None
+        if iA is not None:
+            base_dir = f"{base_dir}{iA:02}"
+        os.makedirs(base_dir, exist_ok=True)
+        return os.path.join(base_dir, *parts)
 
-        with open(f'prints{suffix}/solver.txt', 'a') as file:
-            file.write('Iter newt, |F|, T, sx, |U|')
-            if arclength:
-                file.write(', lambda, N(X)')
-            file.write('\n')
+    def write_header_newton(self, iA: int|None = None):
+        """Writes header to newton.txt file."""
+        path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
+        if path is None:
+            return
 
-    def write_prints(self, iN, F, U, sx, T, arclength = None, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+        header = "iN, |F|, T, sx, |U|"
+        if self.pm.arclength:
+            header += ", lambda, N(X)"
+        print(header, file=open(path, "a"))
 
-        with open(f'prints{suffix}/solver.txt', 'a') as file1,\
-        open(f'prints{suffix}/error_gmres/iN{iN:02}.txt', 'w') as file2,\
-        open(f'prints{suffix}/hookstep/iN{iN:02}.txt', 'w') as file3,\
-        open(f'prints{suffix}/apply_A/iN{iN:02}.txt', 'w') as file4,\
-        open(f'prints{suffix}/hookstep/extra_iN{iN:02}.txt', 'w') as file5:
+    def write_newton(self, iN, F, U, sx, T, arclength: tuple|None = None, iA: int|None = None):
+        """Writes iteration data to print file."""
+        newton_path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
+        if newton_path is None:
+            return
 
-            file1.write(f'{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e}')
-            if arclength:
-                file1.write(f',{arclength[0]},{arclength[1]}') #writes lambda (arclength[0]) and N(X) (arclength[1])
-            file1.write('\n')
-            file2.write('iG, error\n')
-            file3.write('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|\n')
+        content = f"{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e}"
+        if arclength:
+            content += f",{arclength[0]},{arclength[1]}"
+        print(content, file=open(newton_path, "a"))
 
-            if arclength:
-                lda_str = ', |dUT_dlda|'
-            else:
-                lda_str = ''
-            file4.write(f'|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|{lda_str}, t_proj, Tx_proj')
-            if arclength:
-                file4.write(f', lda_proj')
-            file4.write('\n')
-            file5.write('Delta, mu, |y|, cond(A)\n')
+    def write_headers(self, iN, iA: int | None = None):
+        """Writes headers to diagnostic files for every Newton iteration iN."""
+        suffix = f'iN{iN:02}.txt'
+        gmres_path = self._get_path(self.pm.gmres_dir, 'gmres_'+suffix, iA=iA)
+        apply_A_path = self._get_path(self.pm.apply_A_dir, 'apply_A_'+suffix, iA=iA)
+        hook_path = self._get_path(self.pm.hookstep_dir, 'hookstep_'+suffix, iA=iA)
+        trust_region_path = self._get_path(self.pm.trust_region_dir, 'trust_region_'+suffix, iA=iA)
 
-    def write_apply_A(self, iN, norms, t_proj, Tx_proj, lda_proj = None, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+        if gmres_path:
+            print('iG, error', file=open(gmres_path, "w"))
+        
+        if hook_path:
+            print('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|', file=open(hook_path, "w"))
 
-        with open(f'prints{suffix}/apply_A/iN{iN:02}.txt', 'a') as file:
-            file.write(','.join([f'{norm:.4e}' for norm in norms]) + f',{t_proj:.4e},{Tx_proj:.4e}')
-            if lda_proj:
-                file.write(f',{lda_proj:.4e}')
-            file.write('\n')
+        if apply_A_path:
+            lda = (", |dUT/dlda|", ", lda_proj") if self.pm.arclength else ("", "")
+            header = f"|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|{lda[0]}, t_proj, Tx_proj{lda[1]}"
+            print(header, file=open(apply_A_path, "w"))
 
-    def write_trust_region(self, iN, Delta, mu, y, A, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+        if trust_region_path:
+            print("Delta, mu, |y|, cond(A)", file=open(trust_region_path, "w"))
 
-        with open(f'prints{suffix}/hookstep/extra_iN{iN:02}.txt', 'a') as file:
-            file.write(f'{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}\n')
+    def write_apply_A(self, iN, norms, t_proj, Tx_proj, lda_proj=None, iA: int | None = None):
+        path = self._get_path(self.pm.apply_A_dir, f"apply_A_iN{iN:02}.txt", iA=iA)
+        if path is None:
+            return
 
-    def write_hookstep(self, iN, iH, F_new, lin_exp, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+        content = ",".join([f"{norm:.4e}" for norm in norms]) + f",{t_proj:.4e},{Tx_proj:.4e}"
+        if lda_proj:
+            content += f",{lda_proj:.4e}"
+        print(content, file=open(path, "a"))
 
-        with open(f'prints{suffix}/hookstep/iN{iN:02}.txt', 'a') as file:
-            file.write(f'{iH:02},{F_new:.4e},{lin_exp:.4e}\n')
+    def write_hookstep(self, iN, iH, F_new, lin_exp, iA: int | None = None):
+        path = self._get_path(self.pm.hookstep_dir, f"hookstep_iN{iN:02}.txt", iA=iA)
+        if path is None:
+            return
 
+        print(f"{iH:02},{F_new:.4e},{lin_exp:.4e}", file=open(path, "a"))
+
+    def write_trust_region(self, iN, Delta, mu, y, A, iA: int | None = None):
+        path = self._get_path(self.pm.trust_region_dir, f"trust_region_iN{iN:02}.txt", iA=iA)
+        if path is None:
+            return
+
+        print(f"{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}", file=open(path, "a"))
+            
     def phase_shifted_b(self, fields):
         """Generate b vector by modifying phases in Fourier space."""
         def apply_phase_shift(U):
@@ -673,11 +689,12 @@ class DynSys():
             F = self.norm(b[:-1]) # F only includes diff between U and UT, not arclength constraint
 
             # Write to txts
-            self.write_prints(iN, F, U, sx, T, (lda*self.pm.norm, N), iA)
+            self.write_newton(iN, F, U, sx, T, (lda*self.pm.norm, N), iA)
+            self.write_headers(iN, iA)
 
             # Perform GMRes iteration
             # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, iN, self.pm.glob_method, iA)
+            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, self.pm.gmres_dir, iN, iA)
 
             # Perform hookstep to adjust solution to trust region
             X, F_new, UT = self.hookstep(X, H, beta, Q, iN, arclength = {'iA':iA, 'dX_dr':dX_dr, 'dr':dr, 'X1':X1})
@@ -697,14 +714,50 @@ class DynSys():
                 b = np.append(b, -N)
                 F = self.norm(b[:-1]) # F only includes diff between U and UT, not arclength constraint
                 # Write to txts
-                self.write_prints(iN+1, F, U, sx, T, (lda*self.pm.norm, N), iA)
+                self.write_newton(iN+1, F, U, sx, T, (lda*self.pm.norm, N), iA)
 
                 if iA is not None:
                     self.save_converged(X, iA)
                 return X
 
     def save_converged(self, X, iA):
-        U, T, sx, lda = self.unpack_X(X, arclength = True)
+        """Save converged solution fields and metadata."""
+        U, T, sx, lda = self.unpack_X(X, arclength=True)
+
+        # Use parameter-driven converged directory
+        conv_dir = getattr(self.pm, "converged_dir", "converged")
+        path = self._get_path(self.pm.converged_dir, f"iA{iA:02}")
+        os.makedirs(path, exist_ok=True)
+
+        solver_file = os.path.join(conv_dir, "solver.txt")
+        if iA == 0 and not os.path.exists(solver_file):
+            print("iA, T, sx, lda, |U|", file=open(solver_file, "a"))
+
+        print(f"{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}",
+            file=open(solver_file, "a"))
+
+        self.write_fields(U, idx=0, path=path)
+
+    # def save_converged(self, X, iA):
+    #     """Save converged solution fields and metadata."""
+    #     U, T, sx, lda = self.unpack_X(X, arclength=True)
+
+    #     # Use parameter-driven converged directory
+    #     conv_dir = getattr(self.pm, "converged_dir", "converged")
+    #     path = os.path.join(conv_dir, f"iA{iA:02}")
+    #     os.makedirs(path, exist_ok=True)
+
+    #     solver_file = os.path.join(conv_dir, "solver.txt")
+    #     if iA == 0 and not os.path.exists(solver_file):
+    #         print("iA, T, sx, lda, |U|", file=open(solver_file, "a"))
+
+    #     print(f"{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}",
+    #         file=open(solver_file, "a"))
+
+    #     self.write_fields(U, idx=0, path=path)
+
+    def save_converged(self, X, iA):
+        U, T, sx, lda = self.unpack_X(X)
         path = f'converged/iA{iA:02}'
         self.mkdir(path)
         if iA == 0:
@@ -812,7 +865,6 @@ class DynSys():
 
         return apply_A, UT
 
-
     def run_arc_auto(self, X0, X1, X_restart = None):
         '''Iterates Newton-GMRes solver until convergence using arclength continuation
         Once a solution has converged it automatically uses the new converged solution as
@@ -823,7 +875,7 @@ class DynSys():
         for iA in range(start_iA, self.pm.N_arc):
             if (self.pm.restart_iN == 0) or (iA != start_iA):
                 self.mkdirs(iA)
-                self.write_header(arclength = True, iA = iA)
+                self.write_header_newton(iA = iA)
 
             X = self.run_arclength(X0, X1, X_restart, iA)
             X0 = X1

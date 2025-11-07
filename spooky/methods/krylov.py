@@ -2,8 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy
 import time
+import os
 
-def GMRES(A, b, N_gmres, tol_gmres, iN:int|None = None, glob_method = 1, iA:int|None = None):
+def GMRES(A, b, N_gmres, tol_gmres, gmres_dir: str|None = None, iN: int|None = None, iA: int|None = None):
     """
     Performs Generalized Minimal Residues to find x that approximates the solution to Ax=b.     
     Iterative method that at step n uses Arnoldi iteration to find an orthogonal basis for Krylov subspace
@@ -65,22 +66,25 @@ def GMRES(A, b, N_gmres, tol_gmres, iN:int|None = None, glob_method = 1, iA:int|
 
         #save the error
         e.append(error)
-        if iN is not None:
+        if gmres_dir:
             suffix = f'{iA:02}' if iA is not None else ''
-            with open(f'prints{suffix}/error_gmres/iN{iN:02}.txt', 'a') as file:
-                file.write(f'{k},{error}\n')
+            path = os.path.join(gmres_dir+suffix, f'gmres_{iN:02}.txt')
+            print(f'{k},{error}', file=open(path, 'a'))
 
         if error<tol_gmres:
             break
 
-    if glob_method:        
-        return H[:k,:k], beta[:k], Q[:,:k]
-    else:
-        #calculate result by solving a triangular system of equations H*y=beta
-        y = backsub(H[:k,:k], beta[:k])
-        x = Q[:,:k]@y
-        return x, e #TODO: Not implemented in upos.py
+    return H[:k,:k], beta[:k], Q[:,:k]
 
+def solve_GMRES(H, beta, Q):
+    """Solves the GMRES system given H, beta and Q matrices returned by GMRES function."""
+    #Determine the data type based on beta
+    dtype = beta.dtype
+    #Solve for y in H y = beta
+    y = backsub(H, beta)
+    #Reconstruct x from y and Q
+    x = Q @ y
+    return x
 
 def arnoldi_step(A, Q, k):
     """Performs k_th Arnoldi iteration of Krylov subspace spanned by <r, Ar, A^2 r,.., A^(k-1) r>"""
@@ -168,11 +172,7 @@ def test_gmres():
     m = 1000
     np.random.seed(0)
 
-    A = np.random.randn(m,m)*m**(-.5)
-    # A = 2*np.eye(m) + 0.5*A/np.sqrt(m)
-
-    # A = np.random.rand(m,m) + 0.5j*np.random.rand(m,m)
-
+    A = np.random.randn(m,m)*m**(-.5) 
     b = np.random.randn(m)
 
     n = m//2
@@ -183,33 +183,30 @@ def test_gmres():
     time_start = time.perf_counter()
     # call benchmark code
 
-    x, e = GMRES(A, b, n, tol, glob_method = 0)
+    H, beta, Q = GMRES(A, b, n, tol)
+    x = solve_GMRES(H, beta, Q)
+
     # record end time
     time_end = time.perf_counter()
     print('Performance GMRES:', time_end-time_start)
 
-    print('GMRES rel. error:', e[-1])
-
-    # plt.figure()
-    # plt.plot(e)
-    # plt.yscale('log')
-    # plt.show()    
+    print('GMRES rel. residual:', np.linalg.norm(b - A @ x)/np.linalg.norm(b))
 
     # record start time
     time_start = time.perf_counter()
 
     # call benchmark code
-    # x_scipy = scipy.linalg.solve(A, b)
+    x_scipy = scipy.linalg.solve(A, b)
 
     # call benchmark code
-    x_scipy,info = scipy.sparse.linalg.gmres(A, b, atol = tol, maxiter = 5, restart = 10, \
-                                             callback = lambda x:print(x), callback_type = 'pr_norm')
+    # x_scipy,info = scipy.sparse.linalg.gmres(A, b, atol = tol, maxiter = 5, restart = 10, \
+    #                                          callback = lambda x:print(x), callback_type = 'pr_norm')
     
     # record end time
     time_end = time.perf_counter()
     print('Performance Scipy:', time_end-time_start)
     print('Norm (scipy -  GMRES) = ', np.linalg.norm(x-x_scipy))
-    print('Scipy convergenge:', info, 'rel. error:', np.linalg.norm(b - A @ x_scipy)/np.linalg.norm(b))
+    print('Scipy convergenge:', info, 'rel. residual:', np.linalg.norm(b - A @ x_scipy)/np.linalg.norm(b))
 
 def test_arnoldi():
     m = 1000
