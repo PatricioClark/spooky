@@ -110,7 +110,7 @@ class DynSys():
         bstep = self.solver.pm.bstep if save_balance else None
 
         # Determine paths if saving outputs
-        odir = self.pm.output_dir 
+        odir = self.pm.output_dir
         bdir = self.pm.balance_dir
         if odir is not None:
             odir = odir if iA is None else os.path.join(odir, f'iA{iA:02}')
@@ -440,7 +440,7 @@ class DynSys():
 
         if gmres_path:
             print('iG, error', file=open(gmres_path, "w"))
-        
+
         if hook_path:
             print('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|', file=open(hook_path, "w"))
 
@@ -475,7 +475,7 @@ class DynSys():
             return
 
         print(f"{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}", file=open(path, "a"))
-            
+
     def phase_shifted_b(self, fields):
         """Generate b vector by modifying phases in Fourier space."""
         def apply_phase_shift(U):
@@ -502,55 +502,6 @@ class DynSys():
 
         b_vector = self.flatten([f.flatten() for f in fields_proj])
         return b_vector
-
-
-    def floq_exp(self, X, n, tol, b = 'U'):
-        ''' Calculates Floquet exponents of periodic orbit '''
-        ''' X: (U,T,sx) of converged periodic orbit, n: number of exponents, tol: tolerance of Arnoldi '''
-
-        from warnings import warn
-        warn('This function is deprecated. Use floquet_exponents instead.',
-             DeprecationWarning)
-
-        # Unpack X
-        U, T, sx = self.unpack_X(X)
-
-        UT = self.evolve(U, T)
-        # Translate UT by sx
-        if self.pm.sx is not None:
-            UT = self.translate(UT, sx)
-
-        def apply_J(dU):
-            ''' Applies J (jacobian of poincare map) matrix to vector dU  '''
-            # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = 1e-7*self.norm(U)/self.norm(dU)
-
-            # Perturb U by epsilon*dU
-            U_pert = U + epsilon*dU
-
-            # Calculate derivative w.r.t. initial fields
-            dUT_dU = self.evolve(U_pert, T)
-            if self.pm.sx is not None:
-                dUT_dU = self.translate(dUT_dU,sx)
-            dUT_dU = (dUT_dU - UT)/epsilon
-            return dUT_dU
-
-        if b == 'U':
-            b = U
-        elif b == 'random':
-            b = np.random.randn(len(U))
-        else:
-            raise ValueError('b must be U or random')
-
-        eigval_H, eigvec_H, Q = arnoldi_eig(apply_J, b, n, tol)
-
-        return eigval_H, eigvec_H, Q
-
-    def lyap_exp(self, fields, T, n, tol, ep0=1e-7, sx=None, b='U'):
-        from warnings import warn
-        warn('This function is deprecated. Use floquet_exponents instead.',
-             DeprecationWarning)
-        return self.floquet_exponents(fields, T, n, tol, ep0, sx, b)
 
     def floquet_exponents(self, fields, T, n, tol, ep0=1e-7, sx=None, b='U', test=False):
         ''' Calculates Floquet exponents
@@ -625,6 +576,108 @@ class DynSys():
             return eigval_H, eigvec_H, Q, Aev_r, Aev_i
 
         return eigval_H, eigvec_H, Q
+
+    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random'):
+        ''' Computes Lyapunov exponents and Kaplan–Yorke dimension via QR iteration.
+
+        This method implements the Benettin algorithm for estimating finite-time
+        Lyapunov exponents by repeatedly evolving a set of orthonormal perturbations
+        over intervals of duration T and reorthonormalizing them using QR decomposition.
+
+        Parameters
+        ----------
+        fields : list of fields
+            Initial fields defining the state U.
+        T : float
+            Integration time between QR reorthonormalizations.
+        n : int
+            Number of Lyapunov exponents to compute.
+        nsteps : int
+            Number of reorthonormalization intervals (total time = nsteps * T)
+        tol : float, optional
+            QR tolerance. Default is 1e-10.
+        ep0 : float, optional
+            Perturbation scaling for the finite-difference tangent map.
+            Default is 1e-7.
+        sx : float, optional
+            Translation in x direction (for translationally invariant systems).
+        b : str or np.ndarray, optional
+            Initial perturbation seed ('random', 'U', 'phases', or user-defined array).
+
+        Returns
+        -------
+        lyap_exponents : np.ndarray, shape (n,)
+            Sorted Lyapunov exponents in descending order.
+        D_KY : float
+            Kaplan–Yorke dimension computed from the cumulative sum of exponents.
+        '''
+
+        U = self.flatten(fields)
+
+        def apply_J(U, dU):
+            ''' Applies the finite-time tangent map DΦ_T(U) to perturbation dU. '''
+            epsilon = ep0 * self.norm(U) / self.norm(dU)
+            U_pert = U + epsilon * dU
+            dUT_dU = self.evolve(U_pert, T) - self.evolve(U, T)
+            if sx is not None:
+                dUT_dU = self.translate(dUT_dU, sx)
+            return dUT_dU / epsilon
+
+        # --- Initialize orthonormal basis Q ---
+        if isinstance(b, str):
+            if b == 'U':
+                b = U.copy()
+            elif b == 'random':
+                b = np.random.randn(len(U))
+            elif b == 'phases':
+                b = self.phase_shifted_b(fields)
+        elif not isinstance(b, np.ndarray):
+            raise ValueError("b must be 'U', 'random', 'phases', or a NumPy array.")
+
+        Q = np.zeros((len(U), n))
+        Q[:, 0] = b / np.linalg.norm(b)
+        for i in range(1, n):
+            q = np.random.randn(len(U))
+            for j in range(i):
+                q -= np.dot(Q[:, j], q) * Q[:, j]
+            Q[:, i] = q / np.linalg.norm(q)
+
+        # --- Accumulate finite-time Lyapunov exponents ---
+        le_sum = np.zeros(n)
+        for step in range(nsteps):
+            # Propagate basis vectors through tangent map
+            V = np.zeros_like(Q)
+            for i in range(n):
+                V[:, i] = apply_J(U, Q[:, i])
+
+            # QR reorthonormalization
+            Q, R = np.linalg.qr(V)
+            diagR = np.abs(np.diag(R))
+            le_sum += np.log(diagR + 1e-300)  # prevent log(0)
+
+            # Re-normalize columns to avoid drift
+            for i in range(n):
+                Q[:, i] /= np.linalg.norm(Q[:, i])
+
+            U = self.evolve(U, T)
+
+        # --- Average over total time ---
+        lyap_exponents = le_sum / (nsteps * T)
+        lyap_exponents = np.sort(lyap_exponents)[::-1]
+
+        # --- Kaplan–Yorke dimension ---
+        S = np.cumsum(lyap_exponents)
+        positive = np.where(S >= 0)[0]
+        if len(positive) > 0:
+            j = positive[-1]
+            if j + 1 < len(S):
+                D_KY = j + S[j] / abs(lyap_exponents[j + 1])
+            else:
+                D_KY = float(j)
+        else:
+            D_KY = 0.0
+
+        return lyap_exponents, D_KY
 
     def run_arclength(self, X0, X1, X_restart = None, iA:int|None = None):
         '''Iterates Newton-GMRes solver until convergence using arclength continuation
