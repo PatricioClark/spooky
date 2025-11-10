@@ -31,8 +31,7 @@ def main():
 
     #  Initialize solver and parameter containers 
     solver = KolmogorovFlow(pm_solver)
-    # pm = Parameters(newton_cfg)
-
+    
     #  Initialize the dynamical system wrapper 
     newt = DynSys(pm, solver)
 

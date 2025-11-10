@@ -1,0 +1,15 @@
+# ============================================================
+# Kolmogorov flow solver parameters
+# ============================================================
+
+Lx:  1.0           # Domain length in x
+Ly:  1.0           # Domain length in y
+Nx: 256            # Number of grid points in x
+Ny: 256            # Number of grid points in y
+Tevolve: 0.2       # Total evolution time
+dt: 0.001          # Time step
+ostep: 1000        # Output step
+bstep: 100         # Balance step
+rkord: 2           # Runge-Kutta order
+nu: 0.025          # Viscosity
+ext: 7             # Number of digits in file names
