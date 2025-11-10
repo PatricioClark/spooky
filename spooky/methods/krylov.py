@@ -68,7 +68,7 @@ def GMRES(A, b, N_gmres, tol_gmres, gmres_dir: str|None = None, iN: int|None = N
         e.append(error)
         if gmres_dir:
             suffix = f'{iA:02}' if iA is not None else ''
-            path = os.path.join(gmres_dir+suffix, f'gmres_{iN:02}.txt')
+            path = os.path.join(gmres_dir+suffix, f'gmres_iN{iN:02}.txt')
             print(f'{k},{error}', file=open(path, 'a'))
 
         if error<tol_gmres:

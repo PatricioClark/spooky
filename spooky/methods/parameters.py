@@ -11,19 +11,19 @@ class Parameters:
     output_dir: str = "output"
     save_outputs: str = "all" # Iterations at which to save evolution outputs. Options: "all", "last", "none" 
     save_balance: str = "all" # Iterations at which to save evolution balance. Options: "all", "last", "none" 
-    balance_dir: str | None = "balance"
+    balance_dir: str|None = "balance"
 
     # Print directories (None = disabled)
-    newton_dir: str | None = "prints"
-    gmres_dir: str | None = "prints/gmres"
-    apply_A_dir: str | None = "prints/apply_A"
-    hookstep_dir: str | None = "prints/hookstep"
-    trust_region_dir: str | None = "prints/trust_region"
+    newton_dir: str|None = "reports"
+    gmres_dir: str|None = "reports/gmres"
+    apply_A_dir: str|None = "reports/apply_A"
+    hookstep_dir: str|None = "reports/hookstep"
+    trust_region_dir: str|None = "reports/trust_region"
 
     # Newton-Solver parameters 
-    T: float | None               # Initial guess for period. If None, steady states are sought
-    Tconst: float | None = None   # If not None, constant evolution time for steady states
-    sx: float | None              # Initial guess for shift in x. If None then RPOs or TW are not searched for
+    T: float|None = None          # Initial guess for period. If None, steady states are sought
+    Tconst: float|None = None     # If not None, constant evolution time for steady states
+    sx: float|None = None         # Initial guess for shift in x. If None then RPOs or TW are not searched for
     N_newt: int = 50              # Maximum number of Newton iterations
     tol_newt: float = 1e-10       # Tolerance for Newton method
     tol_improve: float = 1e-4     # Tolerance for relative improvement of residual
@@ -50,12 +50,12 @@ class Parameters:
     sp_dU: bool = False      # Performs solenoidal projection over dU instead of U+dU    
 
     # Arclength Continuation
-    arclength: bool = False     # Whether to use arclength continuation
-    N_arc: int = 0              # Maximum number of arclength iterations
-    restart_iA: int = 0         # Last running arclength iteration if restarting
-    T0: float | None            # Previously converged period. If None, steady states are sought
-    sx0: float | None           # Previously converged shift in x. If None then RPOs or TW are not searched for
-    lda0: float                 # Previously converged lda.
+    arclength: bool = False           # Whether to use arclength continuation
+    N_arc: int = 0                    # Maximum number of arclength iterations
+    restart_iA: int = 0               # Last running arclength iteration if restarting
+    T0: float|None   = None           # Previously converged period. If None, steady states are sought
+    sx0: float|None  = None           # Previously converged shift in x. If None then RPOs or TW are not searched for
+    lda0: float|None = None           # Previously converged lda.
     converged_dir: str = "converged"  # Directory to save/load converged solutions
 
     def validate(self):

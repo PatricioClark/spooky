@@ -31,33 +31,33 @@ def main():
 
     #  Initialize solver and parameter containers 
     solver = KolmogorovFlow(pm_solver)
-    
+    # pm = Parameters(newton_cfg)
+
     #  Initialize the dynamical system wrapper 
     newt = DynSys(pm, solver)
 
-    # Load converged orbit
-    iN = 5 # Newton iteration of converged orbit
-    path = os.path.join(pm.output_dir, f"iN{iN:02}")
-    fields = solver.load_fields(path, 0)
-    T, sx = newt.get_restart_values(iN) # Get period and shift from converged Newton iteration
-    T = 1.
-
-    U = newt.flatten(fields)
-    if pm.sx is not None: # If searching for RPOs
-        X = np.append(U, [T, sx])
+    #  Load Initial Conditions
+    if pm.restart_iN == 0:
+        print("Starting new Newton-Krylov run", file=sys.stdout)
+        fields = solver.load_fields(pm.input_dir, pm.start_idx)
+        T, sx = pm.T, pm.sx
     else:
-        X = np.append(U, T) # If searching for UPOs with 0 shift
+        print(f"Restarting from Newton iteration {pm.restart_iN}", file=sys.stdout)
+        restart_path = os.path.join(pm.output_dir, f"iN{pm.restart_iN:02}")
+        fields = solver.load_fields(restart_path, 0)
+        T, sx = newt.get_restart_values(pm.restart_iN)
 
-    # Calculate n Floquet exponents
-    n = 50
-    eigval_H, eigvec_H, Q = newt.floq_exp(X, n, tol = 1e-10)
+    #  Form Initial State Vector
+    U = newt.flatten(fields)
+    if pm.sx is not None:
+        X = newt.form_X(U, T, sx)
+    else:
+        X = newt.form_X(U, T)
 
-    # Save Floquet exponents
-    spath = f'floq/iN{iN:02}/'
-    os.makedirs(spath, exist_ok=True)
-    np.save(f'{spath}floq_exp_{n}.npy', eigval_H)
-    np.save(f'{spath}eigvec_H_{n}.npy', eigvec_H)
-    np.save(f'{spath}Q_{n}.npy', Q)
+    #  Run Newton Solver
+    print("Running Newton-Krylov solver", file=sys.stdout)
+    newt.run_newton(X)
+    print("Newton iteration completed successfully.", file=sys.stdout)
 
 if __name__ == "__main__":
     main()

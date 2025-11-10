@@ -59,16 +59,16 @@ class DynSys():
             return U, T, sx, lda
 
     def get_restart_values(self, restart, iA: int | None = None):
-        """Get values from last Newton iteration of T and sx from solver.txt"""
-        suffix = f'{iA:02}' if iA is not None else ''
-        # Use parameterized print directory
-        base_dir = self.pm.newton_dir or "prints"
-        fname = os.path.join(f"{base_dir}{suffix}", "solver.txt")
-        iters, T, sx = np.loadtxt(fname, delimiter=',', skiprows=1, unpack=True, usecols=(0, 2, 3))
+        """Get values from last Newton iteration of T and sx from newton.txt"""
+        path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
+
+        # Load data and find restart iteration
+        iters, T, sx = np.loadtxt(path, delimiter=',', skiprows=1, unpack=True, usecols=(0, 2, 3))
         idx_restart = np.argwhere(iters == restart)[0][0]
+
         values = [T[idx_restart], sx[idx_restart]]
         if self.pm.arclength:
-            lda = np.loadtxt(fname, delimiter=',', skiprows=1, unpack=True, usecols=5)
+            lda = np.loadtxt(path, delimiter=',', skiprows=1, unpack=True, usecols=5)
             values.append(lda[idx_restart])
         return values
 
@@ -106,8 +106,8 @@ class DynSys():
     def evolve(self, U, T, save_outputs = False, save_balance = False, iN = 0, iA:int|None = None):
         '''Evolves fields U in time T'''
         # Determine steps if saving outputs
-        ostep = self.pm.ostep if save_outputs else None
-        bstep = self.pm.bstep if save_balance else None
+        ostep = self.solver.pm.ostep if save_outputs else None
+        bstep = self.solver.pm.bstep if save_balance else None
 
         # Determine paths if saving outputs
         odir = self.pm.output_dir 
@@ -188,11 +188,11 @@ class DynSys():
 
         # Calculate derivatives in time
         if self.pm.T is not None:
-            dUT_dT = self.evolve(UT, self.pm.dt)
-            dUT_dT = (dUT_dT - UT)/self.pm.dt
+            dUT_dT = self.evolve(UT, self.solver.pm.dt)
+            dUT_dT = (dUT_dT - UT)/self.solver.pm.dt
 
-            dU_dt = self.evolve(U, self.pm.dt)
-            dU_dt = (dU_dt - U)/self.pm.dt
+            dU_dt = self.evolve(U, self.solver.pm.dt)
+            dU_dt = (dU_dt - U)/self.solver.pm.dt
         else:
             dUT_dT = dU_dt = np.zeros_like(U) # No evol if T is None
 
@@ -201,6 +201,7 @@ class DynSys():
             ''' Applies A (extended Jacobian) to vector X^t  '''
             dU, dT, ds = self.unpack_X(dX)
 
+            print(self.norm(U), type(self.pm.eps0), self.norm(dU))
             epsilon = self.pm.eps0*self.norm(U)/self.norm(dU)
 
             # Perturb U by epsilon*dU and apply solenoidal projection if sp1 = True
@@ -236,7 +237,6 @@ class DynSys():
         '''Iterates Newton-GMRes solver until convergence'''
         pm = self.pm
         if self.pm.restart_iN == 0:
-            self.mkdirs()
             self.write_header_newton()
 
         for iN in range(pm.restart_iN+1, pm.N_newt):
@@ -256,7 +256,7 @@ class DynSys():
 
             # Perform GMRes iteration
             # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, pm.N_gmres, pm.tol_gmres, iN, pm.glob_method)
+            H, beta, Q = GMRES(apply_A, b, pm.N_gmres, pm.tol_gmres, pm.gmres_dir, iN)
 
             # Perform hookstep to adjust solution to trust region
             X, F_new, UT = self.hookstep(X, H, beta, Q, iN)
@@ -397,32 +397,6 @@ class DynSys():
 
     def mkdir(self, path):
         os.makedirs(path, exist_ok=True)
-
-    def mkdirs(self, iA:int | None = None):
-        """Make directories for solver; if iA is given then outputs are saved in a specific arclength iteration."""
-        suffix = f'{iA:02}' if iA is not None else ''
-        dirs = [
-            self.pm.output_dir,
-            self.pm.balance_dir,
-        ]
-        for d in filter(None, dirs):
-            self.mkdir(f"{d}{suffix}")
-
-    def mkdirs_iN(self, iN, iA:int | None = None):
-        ''' Directories for specific Newton iteration
-        if iA is given then outputs are saved in a specific arclength iteration'''
-
-        if iA is not None:
-            path = os.path.join(f'iA{iA:02}', f'iN{iN:02}')
-        else:
-            path = f'iN{iN:02}'
-
-        opath = os.path.join(self.pm.output_dir, path)
-        self.mkdir(opath)
-
-        if self.pm.balance_dir is not None:
-            bpath = os.path.join(self.pm.balance_dir, path)
-            self.mkdir(bpath)
 
     def _get_path(self, base_dir: str | None, *parts, iA: int | None = None):
         """Safely join base_dir with optional suffix and subpaths.
@@ -704,7 +678,6 @@ class DynSys():
 
             # Termination condition
             if (F_new < self.pm.tol_newt) and ((F-F_new)/F < self.pm.tol_improve):
-                self.mkdirs_iN(iN, iA)
                 UT = self.evolve(U, T, save = True, iN = iN, iA = iA)
                 if self.pm.sx is not None:
                     UT = self.translate(UT, sx)
@@ -725,11 +698,10 @@ class DynSys():
         U, T, sx, lda = self.unpack_X(X, arclength=True)
 
         # Use parameter-driven converged directory
-        conv_dir = getattr(self.pm, "converged_dir", "converged")
-        path = self._get_path(self.pm.converged_dir, f"iA{iA:02}")
+        path = self._get_path(self.pm.converged_dir, "solver.txt", iA=iA)
         os.makedirs(path, exist_ok=True)
 
-        solver_file = os.path.join(conv_dir, "solver.txt")
+        solver_file = os.path.join(path, "solver.txt")
         if iA == 0 and not os.path.exists(solver_file):
             print("iA, T, sx, lda, |U|", file=open(solver_file, "a"))
 
@@ -737,35 +709,6 @@ class DynSys():
             file=open(solver_file, "a"))
 
         self.write_fields(U, idx=0, path=path)
-
-    # def save_converged(self, X, iA):
-    #     """Save converged solution fields and metadata."""
-    #     U, T, sx, lda = self.unpack_X(X, arclength=True)
-
-    #     # Use parameter-driven converged directory
-    #     conv_dir = getattr(self.pm, "converged_dir", "converged")
-    #     path = os.path.join(conv_dir, f"iA{iA:02}")
-    #     os.makedirs(path, exist_ok=True)
-
-    #     solver_file = os.path.join(conv_dir, "solver.txt")
-    #     if iA == 0 and not os.path.exists(solver_file):
-    #         print("iA, T, sx, lda, |U|", file=open(solver_file, "a"))
-
-    #     print(f"{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}",
-    #         file=open(solver_file, "a"))
-
-    #     self.write_fields(U, idx=0, path=path)
-
-    def save_converged(self, X, iA):
-        U, T, sx, lda = self.unpack_X(X)
-        path = f'converged/iA{iA:02}'
-        self.mkdir(path)
-        if iA == 0:
-            print('iA, T, sx, Ra, |U|', file= open('converged/solver.txt', 'a'))
-
-        print(f'{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}',\
-        file = open('converged/solver.txt', 'a'))
-        self.write_fields(U, idx = 0, path = path)
 
     def update_lda(self, lda):
         '''Updates lambda parameter in solver. norm: normalization parameter'''
@@ -794,7 +737,6 @@ class DynSys():
         self.update_lda(lda)
 
         # Evolve fields and save output
-        self.mkdirs_iN(iN-1, iA) # save output and bal from previous iN
         UT = self.evolve(U, T, save = True, iN = iN-1, iA = iA)
 
         # Translate UT by sx and calculate derivatives
@@ -808,11 +750,11 @@ class DynSys():
 
         # Calculate derivatives in time
         if self.pm.T is not None:
-            dUT_dT = self.evolve(UT, self.pm.dt)
-            dUT_dT = (dUT_dT - UT)/self.pm.dt
+            dUT_dT = self.evolve(UT, self.solver.pm.dt)
+            dUT_dT = (dUT_dT - UT)/self.solver.pm.dt
 
-            dU_dt = self.evolve(U, self.pm.dt)
-            dU_dt = (dU_dt - U)/self.pm.dt
+            dU_dt = self.evolve(U, self.solver.pm.dt)
+            dU_dt = (dU_dt - U)/self.solver.pm.dt
         else:
             dUT_dT = dU_dt = np.zeros_like(U) # No evol if T is None
 
@@ -874,7 +816,6 @@ class DynSys():
 
         for iA in range(start_iA, self.pm.N_arc):
             if (self.pm.restart_iN == 0) or (iA != start_iA):
-                self.mkdirs(iA)
                 self.write_header_newton(iA = iA)
 
             X = self.run_arclength(X0, X1, X_restart, iA)
