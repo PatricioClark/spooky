@@ -20,6 +20,18 @@ def load_config(path):
         dic = yaml.safe_load(f)
     return SimpleNamespace(**dic)
 
+def initial_conditions(solver, pm, newt):
+    if pm.restart_iN == 0:
+        print("Starting new Newton-Krylov run", file=sys.stdout)
+        fields = solver.load_fields(pm.input_dir, pm.start_idx)
+        T, sx = pm.T, pm.sx
+    else:
+        print(f"Restarting from Newton iteration {pm.restart_iN}", file=sys.stdout)
+        restart_path = os.path.join(pm.output_dir, f"iN{pm.restart_iN:02}")
+        fields = solver.load_fields(restart_path, 0)
+        T, sx = newt.get_restart_values(pm.restart_iN)
+    return fields, T, sx
+
 def main():
    #  Load configs 
     pm_solver = load_config("params_kolmog.yaml")   # Solver physics params
@@ -36,22 +48,11 @@ def main():
     newt = DynSys(pm, solver)
 
     #  Load Initial Conditions
-    if pm.restart_iN == 0:
-        print("Starting new Newton-Krylov run", file=sys.stdout)
-        fields = solver.load_fields(pm.input_dir, pm.start_idx)
-        T, sx = pm.T, pm.sx
-    else:
-        print(f"Restarting from Newton iteration {pm.restart_iN}", file=sys.stdout)
-        restart_path = os.path.join(pm.output_dir, f"iN{pm.restart_iN:02}")
-        fields = solver.load_fields(restart_path, 0)
-        T, sx = newt.get_restart_values(pm.restart_iN)
+    fields, T, sx = initial_conditions(solver, pm, newt)
 
     #  Form Initial State Vector
     U = newt.flatten(fields)
-    if pm.sx is not None:
-        X = newt.form_X(U, T, sx)
-    else:
-        X = newt.form_X(U, T)
+    X = newt.form_X(U, T, sx)
 
     #  Run Newton Solver
     print("Running Newton-Krylov solver", file=sys.stdout)
