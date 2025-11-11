@@ -1,5 +1,4 @@
 import abc
-import numpy as np
 
 from .. import pseudo as ps
 
