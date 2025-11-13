@@ -123,7 +123,7 @@ class DynSys():
         def apply_J(dU):
             ''' Applies J (jacobian of poincare map) matrix to vector dU  '''
             # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = ep0*self.norm(U)/self.norm(dU)
+            epsilon = ep0*np.linalg.norm(U)/np.linalg.norm(dU)
 
             # Perturb U by epsilon*dU
             U_pert = U + epsilon*dU
@@ -203,7 +203,7 @@ class DynSys():
 
         def apply_J(U, dU):
             ''' Applies the finite-time tangent map DΦ_T(U) to perturbation dU. '''
-            epsilon = ep0 * self.norm(U) / self.norm(dU)
+            epsilon = ep0 * np.linalg.norm(U) / np.linalg.norm(dU)
             U_pert = U + epsilon * dU
             dUT_dU = self.evolve(U_pert, T) - self.evolve(U, T)
             if sx is not None:
