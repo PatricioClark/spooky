@@ -19,9 +19,8 @@ class SPECTER(Solver):
                  grid: ps.Grid2D_semi,
                  nprocs: int,
                  solver='BOUSS',
-                 ftypes=['vx', 'vz', 'th']
-                 ext=4,
-                 ):
+                 ftypes=['vx', 'vz', 'th'],
+                 ext=4):
         super().__init__(grid)
         self.solver = solver
         self.ftypes = ftypes
