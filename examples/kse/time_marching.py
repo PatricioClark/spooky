@@ -9,11 +9,10 @@ import spooky as sp
 from spooky.solvers import KuramotoSivashinsky
 
 import params as pm
-pm.Lx *= 2*np.pi
 
 #  Initialize solver
-grid   = sp.Grid1D(pm)
-solver = KuramotoSivashinsky(pm)
+grid   = sp.Grid1D(pm.Lx, pm.Nx, pm.dt)
+solver = KuramotoSivashinsky(grid)
 
 # Initial conditions
 uu = (0.3*np.cos(2*np.pi*3.0*grid.xx/pm.Lx) +
@@ -30,5 +29,5 @@ bal = np.loadtxt('balance.dat', unpack=True)
 
 plt.figure()
 plt.plot(bal[0], bal[1])
-plt.savefig('balance.png', dpi = 300)
+plt.savefig('energy.png', dpi = 300)
 plt.close()    

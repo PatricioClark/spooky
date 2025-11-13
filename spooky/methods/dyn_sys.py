@@ -3,6 +3,8 @@ import os
 import numpy as np
 import functools
 
+from .. import pseudo as ps
+
 class DynSys():
     """General class for Dynamical Systems-based methods.
 
@@ -11,16 +13,23 @@ class DynSys():
     Methods implemented:
         - Floquet multipliers
         - Lyapunov exponents
+
+    Parameters
+    ----------
+    solver: Solver instance
+        Solver to be used.
     """
-    def __init__(self, pm, solver):
-        self.pm = pm
+    def __init__(self, solver):
         self.solver = solver
         self.grid = solver.grid
 
+        self.remove_boundary = False
+        if isinstance(self.grid, ps.Grid2D_semi):
+            self.remove_boundary = True
+
     def flatten(self, fields):
         '''Flattens fields'''
-        remove_boundary = self.pm.remove_boundary if hasattr(self.pm, 'remove_boundary') else False
-        if not remove_boundary:
+        if not self.remove_boundary:
             return np.concatenate([f.flatten() for f in fields])
         else:
             return np.concatenate([f[:,1:-1].flatten() for f in fields])
@@ -29,12 +38,11 @@ class DynSys():
         '''Unflatten fields'''
         ll = len(U)//self.solver.num_fields
         fields = [U[i*ll:(i+1)*ll] for i in range(self.solver.num_fields)]
-        remove_boundary = self.pm.remove_boundary if hasattr(self.pm, 'remove_boundary') else False
-        if not remove_boundary:
+        if not self.remove_boundary:
             fields = [f.reshape(self.grid.shape) for f in fields]
             return fields
         else:
-            trim_shape = (self.pm.Nx, self.pm.Nz-2)
+            trim_shape = (self.Nx, self.Nz-2)
             trim_fields = [f.reshape(trim_shape) for f in fields]
             fields = [np.pad(f, pad_width = ((0,0),(1,1))) for f in trim_fields] #pads second dimension with zeros before and after
             return fields
@@ -79,20 +87,30 @@ class DynSys():
 
         Paramters
         ---------
-        fields: list of fields.
-        T: time to evolve in each arnoldi iteration
-        n: number of exponents,
-        tol: tolerance of Arnoldi
-        ep0: perturbation factor, optional, default=1e-7
-        sx: translation in x direction, optional, default=None
-        b: initial guess for Arnoldi, optional, default='U'. Could also take in 'random'
-        or a np.array of the same size as U
+        fields: list of arrays
+            List of fields to be used.
+        T: float
+            Time to evolve in each arnoldi iteration.
+        n: int
+            Number of multiplier to calculate
+        tol: float
+            Tolerance of the Arnoldi iteration
+        ep0: float, optional
+            Perturbation factor. Default is 1e-7.
+        sx: float or None, optional
+            Translation in x direction. Default is None.
+        b: str or np.array, optional
+            Initial guess for Arnoldi. Default is 'U'. Could also take in
+            'random' or a np.array of the same size as U
 
         Returns
         -------
-        eigval_H: Floquet multipliers
-        eigvec_H: Floquet vectors
-        Q: Arnoldi basis
+        eigval_H: np.array of complex
+            Floquet multipliers
+        eigvec_H: np.arrays of complex
+            Floquet vectors
+        Q: np.arrays
+            Arnoldi basis
         '''
 
         U = self.flatten(fields)

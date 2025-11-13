@@ -13,8 +13,11 @@ class PseudoSpectral(Solver, abc.ABC):
         - spectra: Energy spectra
         - outs: Outputs
     '''
-    def __init__(self, pm):
-        super().__init__(pm)
+    def __init__(self,
+                 grid: ps.Grid1D | ps.Grid2D | ps.Grid2D_semi | ps.Grid3D,
+                 rkord: int):
+        super().__init__(grid)
+        self.rkord = rkord
 
     def evolve(self, fields, T, bstep=None, ostep=None, sstep=None, bpath = '', opath = '', spath = '', write_outputs=True):
         ''' Evolves velocity fields to time T '''
@@ -22,7 +25,7 @@ class PseudoSpectral(Solver, abc.ABC):
         # Forward transform
         fields = [self.grid.forward(ff) for ff in fields]
 
-        Nt = int(T/self.pm.dt)
+        Nt = int(T/self.grid.dt)
         for step in range(Nt+1):
             # Store previous time step
             prev = np.copy(fields)
@@ -39,7 +42,7 @@ class PseudoSpectral(Solver, abc.ABC):
                     break
 
             # Time integration
-            for oo in range(self.pm.rkord, 0, -1):
+            for oo in range(self.rkord, 0, -1):
                 fields = self.rkstep(fields, prev, oo, dt)
 
         # Write final outputs

@@ -17,9 +17,9 @@ class SWHD_1D(PseudoSpectral):
 
     num_fields = 2
     dim_fields = 1
-    def __init__(self, pm):
-        super().__init__(pm)
-        self.grid = ps.Grid1D(pm)
+    def __init__(self,
+                 grid: ps.Grid1D, pm, rkord=2):
+        super().__init__(grid, rkord)
         self.make_data = pm.make_data
         self.noise = pm.noise
         self.uum_noise_std = pm.uum_noise_std

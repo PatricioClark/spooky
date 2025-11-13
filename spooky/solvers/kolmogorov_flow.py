@@ -15,21 +15,48 @@ class KolmogorovFlow(PseudoSpectral):
 
     See Eq. (6.143) in Pope's Turbulent flows for details on the Fourier
     decomposition of the NS equations and the pressure proyector.
+
+    Parameters
+    ---------
+    grid: Grid2D instance
+        Defines spatiotemporal grid parameters.
+    kf: int, optional
+        Forcing wavenumber. Default is 4.
+    f0: float, optional
+        Forcing amplitude. Default is 1.0.
+    nu: float, optional
+        Viscosity. Default is 1.0.
+    ftypes: list of strings, optional
+        Field names used when writing output files. Defaults are 'uu' and 'vv'.
+    rkord: int, optional
+        Order of the RK integration. Default is 2.
+    ext: int, optional
+        Length of zero padding in output file name. Default is 4.
     '''
 
     num_fields = 2
     dim_fields = 2
 
-    def __init__(self, pm, kf=4, f0=1., ftypes=['uu', 'vv']):
-        super().__init__(pm)
-        self.grid = ps.Grid2D(pm)
+    def __init__(self,
+                 grid: ps.Grid2D,
+                 kf=4,
+                 f0=1.,
+                 nu = 1.0,
+                 ftypes=['uu', 'vv'],
+                 rkord=2,
+                 ext=4):
+        super().__init__(grid, rkord)
         self.ftypes = ftypes
         self.solver = 'KolmogorovFlow'
+        self.ext = ext
+
+        # viscosity
+        self.nu = nu
 
         # Forcing
         self.kf = kf
         self.f0 = f0
-        self.fx = f0 *np.sin(2*np.pi*kf*self.grid.yy/pm.Ly)
+        self.fx = f0 *np.sin(2*np.pi*kf*self.grid.yy/self.grid.Ly)
         self.fx = self.grid.forward(self.fx)
         self.fy = np.zeros_like(self.fx, dtype=complex)
         self.fx, self.fy = self.grid.inc_proj([self.fx, self.fy])
@@ -56,13 +83,13 @@ class KolmogorovFlow(PseudoSpectral):
         # Equations
         fu = fup + (dt/oo) * (
             - gx
-            - self.pm.nu * self.grid.k2 * fu 
+            - self.nu * self.grid.k2 * fu 
             + self.fx
             )
 
         fv = fvp + (dt/oo) * (
             - gy
-            - self.pm.nu * self.grid.k2 * fv 
+            - self.nu * self.grid.k2 * fv 
             + self.fy
             )
 
@@ -80,22 +107,22 @@ class KolmogorovFlow(PseudoSpectral):
     def outs(self, fields, step, opath):
         uu = self.grid.inverse(fields[0])
         vv = self.grid.inverse(fields[1])
-        np.save(os.path.join(opath,f'uu.{step:0{self.pm.ext}}'), uu)
-        np.save(os.path.join(opath,f'vv.{step:0{self.pm.ext}}'), vv)
+        np.save(os.path.join(opath,f'uu.{step:0{self.ext}}'), uu)
+        np.save(os.path.join(opath,f'vv.{step:0{self.ext}}'), vv)
 
     def balance(self, fields, step, bpath):
         eng = self.grid.energy(fields)
         ens = self.grid.enstrophy(fields)
-        dis = - 2 * self.pm.nu * ens
+        dis = - 2 * self.nu * ens
         inj = self.injection(fields, [self.fx, self.fy])
 
-        bal = [f'{self.pm.dt*step:.4e}', f'{eng:.6e}', f'{dis:.6e}', f'{inj:.6e}']
+        bal = [f'{self.grid.dt*step:.4e}', f'{eng:.6e}', f'{dis:.6e}', f'{inj:.6e}']
         with open(os.path.join(bpath, 'balance.dat'), 'a') as output:
             print(*bal, file=output)
 
     def load_fields(self, path, step, ext = None):
         if not ext:
-            ext = self.pm.ext
+            ext = self.ext
         uu = np.load(os.path.join(path, f'uu.{step:0{ext}}.npy'))
         vv = np.load(os.path.join(path, f'vv.{step:0{ext}}.npy'))
         return [uu, vv]
