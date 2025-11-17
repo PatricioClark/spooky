@@ -12,14 +12,20 @@ class GHOST(Solver):
     '''
 
     def __init__(self,
-                 grid,
-                 nprocs,
-                 solver='HD',
-                 dimension=2,
-                 precision='double',
-                 ext=4):
+                 grid: ps.Grid,
+                 nu: float,
+                 nprocs: int,
+                 solver: str = 'HD',
+                 dimension: int = 2,
+                 precision: str = 'double',
+                 ext: int = 4):
+        self.grid = grid
+        self.nu = nu
+        self.nprocs = nprocs
         self.solver = solver
         self.dimension = dimension
+        self.precision = precision
+        self.ext = ext
 
         if self.dimension == 2:
             self.ftypes = ['uu', 'vv']
@@ -31,6 +37,7 @@ class GHOST(Solver):
             self.dim_fields = 3
         else:
             raise ValueError('Invalid dimension')
+
         super().__init__(grid)
 
     def vel_to_ps(self, fields):

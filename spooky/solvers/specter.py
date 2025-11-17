@@ -18,12 +18,21 @@ class SPECTER(Solver):
     def __init__(self,
                  grid: ps.Grid2D_semi,
                  nprocs: int,
-                 solver='BOUSS',
-                 ftypes=['vx', 'vz', 'th'],
-                 ext=4):
+                 ra: float,
+                 pr: float,
+                 gamma: float = 1.,
+                 solver: str ='BOUSS',
+                 ftypes: list =['vx', 'vz', 'th'],
+                 ext: int = 5):
         super().__init__(grid)
+        self.grid = grid
+        self.nprocs = nprocs
+        self.ra = ra
+        self.pr = pr
+        self.gamma = gamma
         self.solver = solver
         self.ftypes = ftypes
+        self.ext = ext
 
     def evolve(self, fields, T, bstep=None, ostep=None, sstep=None, bpath='', opath='', spath=''):
         '''Evolves fields in T time and translates by sx. Calls Fortran'''
@@ -72,13 +81,10 @@ class SPECTER(Solver):
 
     def get_nu_kappa(self):
         '''Calculates nu and kappa from ra'''
-        ra = self.pm.ra
-        pr = getattr(self.pm, 'pr', 1.) # in case pr and gamma are not defined in params
-        gamma = getattr(self.pm, 'gamma', 1.)    
         Lz = self.grid.Lz
 
-        nu = gamma*Lz**2 * np.sqrt(pr/ra)
-        kappa = gamma*Lz**2 / np.sqrt(pr*ra)
+        nu = self.gamma*Lz**2 * np.sqrt(self.pr/self.ra)
+        kappa = self.gamma*Lz**2 / np.sqrt(self.pr*self.ra)
         return nu, kappa
 
     def ch_params(self, T, bstep = 0, ostep=0, opath = ''):
