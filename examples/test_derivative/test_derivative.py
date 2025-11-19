@@ -4,7 +4,6 @@ Test derivatives of pseudo-spectral method
 
 import numpy as np
 import matplotlib.pyplot as plt
-from types import SimpleNamespace
 
 # Import corresponding module
 import spooky.pseudo as ps
@@ -12,15 +11,16 @@ import spooky.pseudo as ps
 # 1D -------------------------------------------------
 
 # Paramters
-pm = {"Lx": 22.0, "Nx": 128, "T": 100.0, "dt": 1e-5}
-pm = SimpleNamespace(**pm)
+Lx = 22.0
+Nx = 128
+dt = 1e-5
 
 # Initialize solver
-grid   = ps.Grid1D(pm)
+grid   = ps.Grid1D(Lx=Lx, Nx=Nx, dt=dt)
 
 # Function
 plt.figure(1)
-uu = np.cos(2*np.pi*grid.xx/pm.Lx)
+uu = np.cos(2*np.pi*grid.xx/Lx)
 plt.plot(grid.xx, uu)
 
 # Numerical derivative
@@ -30,26 +30,24 @@ du = grid.inverse(du)
 plt.plot(grid.xx, du)
 
 # Analytical derivative
-du = -(2*np.pi/pm.Lx)*np.sin(2*np.pi*grid.xx/pm.Lx)
-plt.plot(grid.xx, du)
+du = -(2*np.pi/Lx)*np.sin(2*np.pi*grid.xx/Lx)
+plt.plot(grid.xx, du, '--')
 
 # 2D -------------------------------------------------
 
 # Paramters
-pm = {"Lx": 4*np.pi,
-      "Nx": 64,
-      "Ly": 4*np.pi,
-      "Ny": 32,
-      "T": 100.0,
-      "dt": 1e-5}
-pm = SimpleNamespace(**pm)
+Lx = 4*np.pi
+Ly = 4*np.pi
+Nx = 64
+Ny = 32
+dt = 1e-5
 
 # Initialize solver
-grid   = ps.Grid2D(pm)
+grid   = ps.Grid2D(Lx=Lx, Ly=Ly, Nx=Nx, Ny=Ny, dt=dt)
 
 # Function
 plt.figure(2)
-uu = np.cos(2*np.pi*grid.xx/pm.Lx)
+uu = np.cos(2*np.pi*grid.xx/Lx)
 j0 = 16
 plt.plot(grid.xx[:, j0], uu[:, j0])
 
@@ -60,8 +58,8 @@ du = grid.inverse(du)
 plt.plot(grid.xx[:, j0], du[:, j0])
 
 # Analytical derivative
-du = -(2*np.pi/pm.Lx)*np.sin(2*np.pi*grid.xx/pm.Lx)
-plt.plot(grid.xx[:, j0], du[:, j0])
+du = -(2*np.pi/Lx)*np.sin(2*np.pi*grid.xx/Lx)
+plt.plot(grid.xx[:, j0], du[:, j0], '--')
 
 # De-aliasing modes
 plt.figure(3)
