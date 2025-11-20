@@ -5,6 +5,7 @@ import subprocess
 import os
 
 from .solver import Solver
+from .. import pseudo as ps
 
 class GHOST(Solver):
     '''
@@ -12,7 +13,7 @@ class GHOST(Solver):
     '''
 
     def __init__(self,
-                 grid: ps.Grid,
+                 grid: ps.Grid1D | ps.Grid2D | ps.Grid3D,
                  nu: float,
                  nprocs: int,
                  solver: str = 'HD',

@@ -201,11 +201,11 @@ class DynSys():
 
         U = self.flatten(fields)
 
-        def apply_J(U, dU):
+        def apply_J(U, dU, Uevol):
             ''' Applies the finite-time tangent map DΦ_T(U) to perturbation dU. '''
             epsilon = ep0 * np.linalg.norm(U) / np.linalg.norm(dU)
             U_pert = U + epsilon * dU
-            dUT_dU = self.evolve(U_pert, T) - self.evolve(U, T)
+            dUT_dU = self.evolve(U_pert, T) - Uevol
             if sx is not None:
                 dUT_dU = self.translate(dUT_dU, sx)
             return dUT_dU / epsilon
@@ -234,8 +234,9 @@ class DynSys():
         for step in range(nsteps):
             # Propagate basis vectors through tangent map
             V = np.zeros_like(Q)
+            Uevol = self.evolve(U, T)
             for i in range(n):
-                V[:, i] = apply_J(U, Q[:, i])
+                V[:, i] = apply_J(U, Q[:, i], Uevol)
 
             # QR reorthonormalization
             Q, R = np.linalg.qr(V)
@@ -246,7 +247,7 @@ class DynSys():
             for i in range(n):
                 Q[:, i] /= np.linalg.norm(Q[:, i])
 
-            U = self.evolve(U, T)
+            U = np.copy(Uevol)
 
         # --- Average over total time ---
         lyap_exponents = le_sum / (nsteps * T)
