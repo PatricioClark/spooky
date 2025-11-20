@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
         name='spookyflows',
-        version='0.2',
+        version='0.2.1',
         packages=find_packages(),
         description='Tools and algorithms for fluid flow simulations',
         url='https://github.com/PatricioClark/spooky',
