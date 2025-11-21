@@ -1,14 +1,14 @@
-''' Definitions of 1- and 2-D periodic grids '''
-import jax.numpy as np
+''' Definitions of 1-, 2- and 3-D periodic grids '''
+from ._backend import xnp, index_update
 
 class Grid1D:
     def __init__(self, Lx, Nx, dt):
-        xx, dx = np.linspace(0, Lx, Nx, endpoint=False, retstep=True)
+        xx, dx = xnp.linspace(0, Lx, Nx, endpoint=False, retstep=True)
 
-        ki = np.fft.rfftfreq(Nx, 1/Nx).astype(int)
-        kx = 2.0*np.pi*np.fft.rfftfreq(Nx, dx) 
+        ki = xnp.fft.rfftfreq(Nx, 1/Nx).astype(int)
+        kx = 2.0*xnp.pi*xnp.fft.rfftfreq(Nx, dx)
         k2 = kx**2
-        kk = np.sqrt(k2)
+        kk = xnp.sqrt(k2)
         
         self.Lx = Lx
         self.xx = xx
@@ -32,12 +32,12 @@ class Grid1D:
     @staticmethod
     def forward(ui):
         ''' Forward Fourier transform '''
-        return np.fft.rfftn(ui)
+        return xnp.fft.rfftn(ui)
 
     @staticmethod
     def inverse(ui):
         ''' Invserse Fourier transform '''
-        return np.fft.irfftn(ui).real
+        return xnp.fft.irfftn(ui).real
 
     @staticmethod
     def deriv(ui, ki):
@@ -48,7 +48,7 @@ class Grid1D:
         ''' Mean in Fourier space. rfftn is used, so in last dimension middle modes must be 
         doubled to account for negative frequencies. If n is even the last mode contains +fs/2 and -fs/2'''
         tmp = 1 if ui.shape[-1] % 2 == 0 else 2
-        sum_ui = np.sum(ui[...,0]) + 2.0*np.sum(ui[...,1:-1]) + tmp* np.sum(ui[...,-1])
+        sum_ui = xnp.sum(ui[...,0]) + 2.0*xnp.sum(ui[...,1:-1]) + tmp* xnp.sum(ui[...,-1])
         return self.norm * sum_ui
 
     @staticmethod
@@ -73,7 +73,7 @@ class Grid1D:
         # Forward transform
         f = [self.forward(ff) for ff in fields]
         # Translate
-        f = [ff*np.exp(1.0j*self.kx*sx) for ff in f]
+        f = [ff*xnp.exp(1.0j*self.kx*sx) for ff in f]
         # Inverse transform
         fields = [self.inverse(ff) for ff in f]
         return fields
@@ -89,19 +89,19 @@ class Grid2D(Grid1D):
     def __init__(self, Lx, Ly, Nx, Ny, dt):
         super().__init__(Lx, Nx, dt)
 
-        xi, dx = np.linspace(0, Lx, Nx, endpoint=False, retstep=True)
-        yi, dy = np.linspace(0, Ly, Ny, endpoint=False, retstep=True)
-        xx, yy = np.meshgrid(xi, yi, indexing='ij')
+        xi, dx = xnp.linspace(0, Lx, Nx, endpoint=False, retstep=True)
+        yi, dy = xnp.linspace(0, Ly, Ny, endpoint=False, retstep=True)
+        xx, yy = xnp.meshgrid(xi, yi, indexing='ij')
 
-        kx = 2.0*np.pi*np.fft.fftfreq(Nx, dx) 
-        ky = 2.0*np.pi*np.fft.rfftfreq(Ny, dy)
-        kx, ky = np.meshgrid(kx, ky, indexing='ij')
+        kx = 2.0*xnp.pi*xnp.fft.fftfreq(Nx, dx)
+        ky = 2.0*xnp.pi*xnp.fft.rfftfreq(Ny, dy)
+        kx, ky = xnp.meshgrid(kx, ky, indexing='ij')
         k2 = kx**2 + ky**2
-        kk = np.sqrt(k2)
+        kk = xnp.sqrt(k2)
 
-        ki = np.fft.fftfreq(Nx, 1/Nx)
-        kj = np.fft.rfftfreq(Ny, 1/Ny)
-        ki, kj = np.meshgrid(ki, kj, indexing='ij')
+        ki = xnp.fft.fftfreq(Nx, 1/Nx)
+        kj = xnp.fft.rfftfreq(Ny, 1/Ny)
+        ki, kj = xnp.meshgrid(ki, kj, indexing='ij')
         kr = (ki/Nx)**2 + (kj/Ny)**2
 
         self.Lx = Lx
@@ -129,7 +129,7 @@ class Grid2D(Grid1D):
         self.dealias_modes = (kr > 1/9)
 
         # Incompressiblity projector, careful not to divide by zero
-        kk2 = k2.at[self.zero_mode].set(1.0)
+        kk2 = index_update(k2, self.zero_mode, 1.0)
         self.pxx = 1.0 - self.kx**2/kk2
         self.pyy = 1.0 - self.ky**2/kk2
         self.pxy = - self.kx*self.ky/kk2
@@ -138,7 +138,7 @@ class Grid2D(Grid1D):
         # Forward transform
         f = [self.forward(ff) for ff in fields]
         # Translate
-        f = [ff *np.exp(1.0j*self.kx*sx) *np.exp(1.0j*self.ky*sy) for ff in f]
+        f = [ff *xnp.exp(1.0j*self.kx*sx) *xnp.exp(1.0j*self.ky*sy) for ff in f]
         # Inverse transform
         fields = [self.inverse(ff) for ff in f]
         return fields
@@ -154,8 +154,8 @@ class Grid2D_semi(Grid1D):
     ''' 2D grid periodic only in the horizontal direction. To be used with the SPECTER wrapper '''
     def __init__(self, Lx, Lz, Nx, Nz, dt):
         super().__init__(Lx, Nx, dt)
-        zi, dz = np.linspace(0, Lz, Nz, endpoint=False, retstep=True)
-        kx, zz = np.meshgrid(self.kx, zi, indexing='ij')
+        zi, dz = xnp.linspace(0, Lz, Nz, endpoint=False, retstep=True)
+        kx, zz = xnp.meshgrid(self.kx, zi, indexing='ij')
 
         self.Lx = Lx
         self.Lz = Lz
@@ -172,12 +172,12 @@ class Grid2D_semi(Grid1D):
     @staticmethod
     def forward(ui):
         ''' Forward Fourier transform '''
-        return np.fft.rfft(ui, axis = 0)
+        return xnp.fft.rfft(ui, axis = 0)
 
     @staticmethod
     def inverse(ui):
         ''' Invserse Fourier transform '''
-        ui =  np.fft.irfft(ui, axis = 0).real
+        ui =  xnp.fft.irfft(ui, axis = 0).real
         return ui
 
 
@@ -185,22 +185,22 @@ class Grid3D(Grid1D):
     def __init__(self, Lx, Ly, Lz, Nx, Ny, Nz, dt):
         super().__init__(Lx, Nx, dt)
 
-        xi, dx = np.linspace(0, Lx, Nx, endpoint=False, retstep=True)
-        yi, dy = np.linspace(0, Ly, Ny, endpoint=False, retstep=True)
-        zi, dz = np.linspace(0, Lz, Nz, endpoint=False, retstep=True)
-        xx, yy, zz = np.meshgrid(xi, yi, zi, indexing='ij')
+        xi, dx = xnp.linspace(0, Lx, Nx, endpoint=False, retstep=True)
+        yi, dy = xnp.linspace(0, Ly, Ny, endpoint=False, retstep=True)
+        zi, dz = xnp.linspace(0, Lz, Nz, endpoint=False, retstep=True)
+        xx, yy, zz = xnp.meshgrid(xi, yi, zi, indexing='ij')
 
-        kx = 2.0*np.pi*np.fft.fftfreq(Nx, dx) 
-        ky = 2.0*np.pi*np.fft.fftfreq(Ny, dy)
-        kz = 2.0*np.pi*np.fft.rfftfreq(Nz, dz)
-        kx, ky, kz = np.meshgrid(kx, ky, kz, indexing='ij')
+        kx = 2.0*xnp.pi*xnp.fft.fftfreq(Nx, dx)
+        ky = 2.0*xnp.pi*xnp.fft.fftfreq(Ny, dy)
+        kz = 2.0*xnp.pi*xnp.fft.rfftfreq(Nz, dz)
+        kx, ky, kz = xnp.meshgrid(kx, ky, kz, indexing='ij')
         k2 = kx**2 + ky**2 + kz**2
-        kk = np.sqrt(k2)
+        kk = xnp.sqrt(k2)
 
-        ki = np.fft.fftfreq(Nx, 1/Nx)
-        kj = np.fft.fftfreq(Ny, 1/Ny)
-        kl = np.fft.rfftfreq(Nz, 1/Nz)
-        ki, kj, kl = np.meshgrid(ki, kj, kl, indexing='ij')
+        ki = xnp.fft.fftfreq(Nx, 1/Nx)
+        kj = xnp.fft.fftfreq(Ny, 1/Ny)
+        kl = xnp.fft.rfftfreq(Nz, 1/Nz)
+        ki, kj, kl = xnp.meshgrid(ki, kj, kl, indexing='ij')
         kr = (ki/Nx)**2 + (kj/Ny)**2 + (kz/Nz)**2
 
         self.Lx = Lx
@@ -235,7 +235,7 @@ class Grid3D(Grid1D):
         self.zero_mode = (0, 0, 0)
         self.dealias_modes = (self.kr > 1/9)
 
-        kk2 = k2.at[self.zero_mode].set(1.0)
+        kk2 = index_update(k2, self.zero_mode, 1.0)
         self.pxx = 1.0 - self.kx**2/kk2
         self.pyy = 1.0 - self.ky**2/kk2
         self.pzz = 1.0 - self.kz**2/kk2
@@ -247,7 +247,7 @@ class Grid3D(Grid1D):
         # Forward transform
         f = [self.forward(ff) for ff in fields]
         # Translate
-        f = [ff *np.exp(1.0j*self.kx*sx) *np.exp(1.0j*self.ky*sy) *np.exp(1.0j*self.kz*sz) for ff in f]
+        f = [ff *xnp.exp(1.0j*self.kx*sx) *xnp.exp(1.0j*self.ky*sy) *xnp.exp(1.0j*self.kz*sz) for ff in f]
         # Inverse transform
         fields = [self.inverse(ff) for ff in f]
         return fields

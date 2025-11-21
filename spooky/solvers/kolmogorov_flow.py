@@ -1,8 +1,7 @@
 ''' 2D Kolmogorov flow solver '''
 
-import jax.numpy as np
-from jax import jit
-from functools import partial
+import numpy as np
+from .._backend import xnp, index_update, apply_jit
 import os
 
 from .pseudospectral import PseudoSpectral
@@ -58,12 +57,12 @@ class KolmogorovFlow(PseudoSpectral):
         # Forcing
         self.kf = kf
         self.f0 = f0
-        self.fx = f0 *np.sin(2*np.pi*kf*self.grid.yy/self.grid.Ly)
+        self.fx = f0 *xnp.sin(2*xnp.pi*kf*self.grid.yy/self.grid.Ly)
         self.fx = self.grid.forward(self.fx)
-        self.fy = np.zeros_like(self.fx, dtype=complex)
+        self.fy = xnp.zeros_like(self.fx, dtype=complex)
         self.fx, self.fy = self.grid.inc_proj([self.fx, self.fy])
 
-    @partial(jit, static_argnums=(0,))
+    @apply_jit
     def rkstep(self, fields, prev, oo, dt):
         # Unpack
         fu, fv = fields
@@ -97,10 +96,10 @@ class KolmogorovFlow(PseudoSpectral):
             )
 
         # de-aliasing
-        fu = fu.at[self.grid.zero_mode].set(0.0)
-        fu = fu.at[self.grid.dealias_modes].set(0.0)
-        fv = fv.at[self.grid.zero_mode].set(0.0)
-        fv = fv.at[self.grid.dealias_modes].set(0.0)
+        fu = index_update(fu, self.grid.zero_mode, 0.0)
+        fu = index_update(fu, self.grid.dealias_modes, 0.0)
+        fv = index_update(fv, self.grid.zero_mode, 0.0)
+        fv = index_update(fv, self.grid.dealias_modes, 0.0)
 
         return [fu, fv]
 

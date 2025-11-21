@@ -1,8 +1,7 @@
 ''' 1D Kuramoto Sivashinsky equation '''
 
-import jax.numpy as np
-from jax import jit
-from functools import partial
+import numpy as np
+from .._backend import xnp, index_update, apply_jit
 
 from .pseudospectral import PseudoSpectral
 from .. import pseudo as ps
@@ -33,7 +32,7 @@ class KuramotoSivashinsky(PseudoSpectral):
         self.nu = 1.0
         self.ext = ext
 
-    @partial(jit, static_argnums=(0,))
+    @apply_jit
     def rkstep(self, fields, prev, oo, dt):
         # Unpack
         fu  = fields[0]
@@ -50,8 +49,8 @@ class KuramotoSivashinsky(PseudoSpectral):
             )
 
         # de-aliasing
-        fu = fu.at[self.grid.zero_mode].set(0.0)
-        fu = fu.at[self.grid.dealias_modes].set(0.0)
+        fu = index_update(fu, self.grid.zero_mode, 0.0)
+        fu = index_update(fu, self.grid.dealias_modes, 0.0)
 
         return [fu]
 

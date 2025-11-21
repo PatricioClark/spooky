@@ -1,7 +1,7 @@
 import abc
-import jax.numpy as np
 
 from .solver import Solver
+from .._backend import xnp, copy_arr
 from .. import pseudo as ps
 
 class PseudoSpectral(Solver, abc.ABC):
@@ -28,7 +28,7 @@ class PseudoSpectral(Solver, abc.ABC):
         Nt = int(T/self.grid.dt)
         for step in range(Nt+1):
             # Store previous time step
-            prev = fields
+            prev = copy_arr(fields)
 
             # Write outputs
             if write_outputs:
@@ -38,7 +38,7 @@ class PseudoSpectral(Solver, abc.ABC):
             #Make exact last step
             if step == Nt:
                 dt = T - Nt*self.grid.dt
-                if np.isclose(dt, 0., atol=1e-8):
+                if xnp.isclose(dt, 0., atol=1e-8):
                     break
 
             # Time integration

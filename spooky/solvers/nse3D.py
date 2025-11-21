@@ -1,8 +1,7 @@
 ''' 3D Navier-Stokes solver '''
 
-import jax.numpy as np
-from jax import jit
-from functools import partial
+import numpy as np
+from .._backend import xnp, index_update, apply_jit
 import os
 
 from .pseudospectral import PseudoSpectral
@@ -31,13 +30,13 @@ class NSE3D(PseudoSpectral):
         # Forcing
         self.kf = kf
         self.f0 = f0
-        self.fx = f0 *np.sin(2*np.pi*kf*self.grid.yy/pm.Ly)
+        self.fx = f0*xnp.sin(2*np.pi*kf*self.grid.yy/pm.Ly)
         self.fx = self.grid.forward(self.fx)
-        self.fy = np.zeros_like(self.fx, dtype=complex)
-        self.fz = np.zeros_like(self.fx, dtype=complex)
+        self.fy = xnp.zeros_like(self.fx, dtype=complex)
+        self.fz = xnp.zeros_like(self.fx, dtype=complex)
         self.fx, self.fy, self.fz = self.grid.inc_proj([self.fx, self.fy, self.fz])
 
-    @partial(jit, static_argnums=(0,))
+    @apply_jit
     def rkstep(self, fields, prev, oo, dt):
         # Unpack
         fu, fv, fw = fields
