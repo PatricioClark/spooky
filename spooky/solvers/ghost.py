@@ -12,23 +12,34 @@ class GHOST(Solver):
     GHOST 2D/3D flows solver
     '''
 
-    def __init__(self, pm, solver = 'HD', dimension = 2):
+    def __init__(self,
+                 grid: ps.Grid1D | ps.Grid2D | ps.Grid3D,
+                 nu: float,
+                 nprocs: int,
+                 solver: str = 'HD',
+                 dimension: int = 2,
+                 precision: str = 'double',
+                 ext: int = 4):
+        self.grid = grid
+        self.nu = nu
+        self.nprocs = nprocs
         self.solver = solver
         self.dimension = dimension
+        self.precision = precision
+        self.ext = ext
 
         if self.dimension == 2:
             self.ftypes = ['uu', 'vv']
-            self.grid = ps.Grid2D(pm)
             self.num_fields = 2
             self.dim_fields = 2
         elif self.dimension == 3:
             self.ftypes = ['vx', 'vy', 'vz']
-            self.grid = ps.Grid3D(pm)
             self.num_fields = 3
             self.dim_fields = 3
         else:
             raise ValueError('Invalid dimension')
-        super().__init__(pm)
+
+        super().__init__(grid)
 
     def vel_to_ps(self, fields):
         '''Converts velocity fields to stream function'''
@@ -56,7 +67,7 @@ class GHOST(Solver):
         self.ch_params(T, ipath, opath, bstep, ostep, sstep, vort) #save fields every ostep, bal every bstep, spectrum every sstep
 
         #run GHOST
-        subprocess.run(f'mpirun -n {self.pm.nprocs} ./{self.solver}', shell = True)
+        subprocess.run(f'mpirun -n {self.nprocs} ./{self.solver}', shell = True)
 
         #save balance prints
         if bstep:
@@ -71,12 +82,12 @@ class GHOST(Solver):
         if not ostep:
             fields = self.load_fields()
         else:
-            fields = self.load_fields(path=opath, idx = int(T/self.pm.dt //ostep) + 1) # +1 since we start from 1
+            fields = self.load_fields(path=opath, idx = int(T/self.grid.dt //ostep) + 1) # +1 since we start from 1
         return fields
 
     def save_binary_file(self, path, data):
         '''writes fortran file'''
-        dtype = np.float64 if self.pm.precision == 'double' else np.float32
+        dtype = np.float64 if self.precision == 'double' else np.float32
         data = data.astype(dtype).reshape(data.size,order='F')
         data.tofile(path)
 
@@ -84,23 +95,23 @@ class GHOST(Solver):
         ''' Writes fields to binary file. Saves temporal fields with idx=1'''
         if self.dimension == 2:
             field = self.vel_to_ps(fields)
-            self.save_binary_file(os.path.join(path,f'ps.{stat:0{self.pm.ext}}.out'), field)
+            self.save_binary_file(os.path.join(path,f'ps.{stat:0{self.ext}}.out'), field)
         else:
             for field, ftype in zip(fields, self.ftypes):
-                self.save_binary_file(os.path.join(path,f'{ftype}.{stat:0{self.pm.ext}}.out'), field)
+                self.save_binary_file(os.path.join(path,f'{ftype}.{stat:0{self.ext}}.out'), field)
 
     def load_fields(self, path = '.', idx = 2): 
         '''Loads binary fields. idx = 2 for default read '''
-        dtype = np.float64 if self.pm.precision == 'double' else np.float32
+        dtype = np.float64 if self.precision == 'double' else np.float32
         if self.dimension == 2:
             ftype = 'ps'
-            file = os.path.join(path,f'{ftype}.{idx:0{self.pm.ext}}.out')
+            file = os.path.join(path,f'{ftype}.{idx:0{self.ext}}.out')
             ps = np.fromfile(file,dtype=dtype).reshape(self.grid.shape,order='F')
             fields = self.ps_to_vel(ps)
         else:
             fields = []
             for ftype in self.ftypes:
-                file = os.path.join(path,f'{ftype}.{idx:0{self.pm.ext}}.out')
+                file = os.path.join(path,f'{ftype}.{idx:0{self.ext}}.out')
                 fields.append(np.fromfile(file,dtype=dtype).reshape(self.grid.shape,order='F'))
         return fields
 
@@ -114,7 +125,7 @@ class GHOST(Solver):
             lines = file.readlines()
 
         if ostep == 0:
-            ostep = int(T/self.pm.dt)
+            ostep = int(T/self.grid.dt)
 
         for i, line in enumerate(lines):
             if line.startswith('idir'): #modifies input directory
@@ -124,9 +135,9 @@ class GHOST(Solver):
             if line.startswith('stat'): #modifies starting index
                 lines[i] = f'stat = {stat}    ! last binary file if restarting an old run\n'
             if line.startswith('dt'): #modifies dt (does not change throughout algorithm)
-                lines[i] = f'dt = {self.pm.dt}   ! time step\n'
+                lines[i] = f'dt = {self.grid.dt}   ! time step\n'
             if line.startswith('step'):#modify period:
-                lines[i] = f'step = {int(T/self.pm.dt)+1}      ! total number of steps\n'
+                lines[i] = f'step = {int(T/self.grid.dt)+1}      ! total number of steps\n'
             if line.startswith('cstep'): #modify cstep (bstep in current code)
                 lines[i] = f'cstep = {bstep} !steps between writing global quantities\n'
             if line.startswith('sstep'): #modify cstep (bstep in current code)
@@ -151,7 +162,7 @@ class GHOST(Solver):
             lines = file.readlines()
 
         if ostep == 0:
-            ostep = int(T//self.pm.dt)
+            ostep = int(T//self.grid.dt)
 
         for i, line in enumerate(lines):
             if line.startswith('idir'): #modifies input directory
@@ -161,9 +172,9 @@ class GHOST(Solver):
             if line.startswith('stat'): #modifies starting index
                 lines[i] = f'stat = {stat}    ! last binary file if restarting an old run\n'
             if line.startswith('dt'): #modifies dt (does not change throughout algorithm)
-                lines[i] = f'dt = {self.pm.dt}   ! time step\n'
+                lines[i] = f'dt = {self.grid.dt}   ! time step\n'
             if line.startswith('step'):#modify period:
-                lines[i] = f'step = {int(T//self.pm.dt)+1}      ! total number of steps\n'
+                lines[i] = f'step = {int(T//self.grid.dt)+1}      ! total number of steps\n'
             if line.startswith('cstep'): #modify cstep (bstep in current code)
                 lines[i] = f'cstep = {bstep} !steps between writing global quantities\n'
             if line.startswith('sstep'): #modify cstep (bstep in current code)
@@ -171,7 +182,7 @@ class GHOST(Solver):
             if line.startswith('tstep'): #modify tstep (ostep in current code)
                 lines[i] = f'tstep = {ostep} !steps between saving fields\n'
             if line.startswith('nu'): #modifies ra (does not change throughout algorithm)
-                lines[i] = f'nu = {self.pm.nu}       ! kinematic viscosity\n'
+                lines[i] = f'nu = {self.nu}       ! kinematic viscosity\n'
             if line.startswith('outs'):
                 if vort: # to save additional vorticity fields
                     lines[i] = 'outs = 1   ! controls the amount of output\n'

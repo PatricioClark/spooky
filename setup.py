@@ -1,10 +1,10 @@
 from setuptools import setup, find_packages
 
 setup(
-        name='spooky',
-        version='0.1',
+        name='spookyflows',
+        version='0.2.1',
         packages=find_packages(),
-        description='Tools and algorithms from pseudo-spectral methods',
+        description='Tools and algorithms for fluid flow simulations',
         url='https://github.com/PatricioClark/spooky',
         author='Patricio Clark Di Leoni',
         author_email='pclarkdileoni@udesa.edu.ar',

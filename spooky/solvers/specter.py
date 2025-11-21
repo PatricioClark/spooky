@@ -15,11 +15,24 @@ class SPECTER(Solver):
     num_fields = 3
     dim_fields = 2
 
-    def __init__(self, pm, solver = 'BOUSS', ftypes = ['vx', 'vz', 'th']):
-        super().__init__(pm)
-        self.grid = ps.Grid2D_semi(pm)
+    def __init__(self,
+                 grid: ps.Grid2D_semi,
+                 nprocs: int,
+                 ra: float,
+                 pr: float,
+                 gamma: float = 1.,
+                 solver: str ='BOUSS',
+                 ftypes: list =['vx', 'vz', 'th'],
+                 ext: int = 5):
+        super().__init__(grid)
+        self.grid = grid
+        self.nprocs = nprocs
+        self.ra = ra
+        self.pr = pr
+        self.gamma = gamma
         self.solver = solver
         self.ftypes = ftypes
+        self.ext = ext
 
     def evolve(self, fields, T, bstep=None, ostep=None, sstep=None, bpath='', opath='', spath=''):
         '''Evolves fields in T time and translates by sx. Calls Fortran'''
@@ -31,7 +44,7 @@ class SPECTER(Solver):
             self.ch_params(T, bstep, ostep, opath) #save fields every ostep, and bal every bstep
 
         #run specter
-        subprocess.run(f'mpirun -n {self.pm.nprocs} ./{self.solver}', shell = True)
+        subprocess.run(f'mpirun -n {self.nprocs} ./{self.solver}', shell = True)
 
         #save balance prints
         if bstep is not None:
@@ -51,30 +64,27 @@ class SPECTER(Solver):
         ''' Writes fields to binary file. Saves temporal fields in bin_tmp with idx=2'''
 
         for field, ftype in zip(fields, self.ftypes):
-            self.save_binary_file(os.path.join(path,f'{ftype}.{idx:0{self.pm.ext}}.out'), field)
+            self.save_binary_file(os.path.join(path,f'{ftype}.{idx:0{self.ext}}.out'), field)
 
         # Save additional empty fields required by solver
         empty_field = np.zeros(self.grid.shape, dtype=np.float64)
         for ftype in ('vy', 'pr'):
-            self.save_binary_file(os.path.join(path,f'{ftype}.{idx:0{self.pm.ext}}.out'), empty_field)
+            self.save_binary_file(os.path.join(path,f'{ftype}.{idx:0{self.ext}}.out'), empty_field)
 
     def load_fields(self, path = 'bin_tmp', idx = 1): 
         '''Loads binary fields. idx = 1 for default read in bin_temp '''
         fields = []
         for ftype in self.ftypes:
-            file = os.path.join(path,f'{ftype}.{idx:0{self.pm.ext}}.out')
+            file = os.path.join(path,f'{ftype}.{idx:0{self.ext}}.out')
             fields.append(np.fromfile(file,dtype=np.float64).reshape(self.grid.shape,order='F'))
         return fields
 
     def get_nu_kappa(self):
         '''Calculates nu and kappa from ra'''
-        ra = self.pm.ra
-        pr = getattr(self.pm, 'pr', 1.) # in case pr and gamma are not defined in params
-        gamma = getattr(self.pm, 'gamma', 1.)    
-        Lz = self.pm.Lz
+        Lz = self.grid.Lz
 
-        nu = gamma*Lz**2 * np.sqrt(pr/ra)
-        kappa = gamma*Lz**2 / np.sqrt(pr*ra)
+        nu = self.gamma*Lz**2 * np.sqrt(self.pr/self.ra)
+        kappa = self.gamma*Lz**2 / np.sqrt(self.pr*self.ra)
         return nu, kappa
 
     def ch_params(self, T, bstep = 0, ostep=0, opath = ''):
@@ -92,7 +102,7 @@ class SPECTER(Solver):
             if line.startswith('odir_newt'): #modify odir_newt
                 lines[i] = f'odir_newt = "{opath}" !output for saved fields\n'
             if line.startswith('dt'): #modifies dt (does not change throughout algorithm)
-                lines[i] = f'dt = {self.pm.dt}   ! time step\n'
+                lines[i] = f'dt = {self.grid.dt}   ! time step\n'
 
             nu, kappa = self.get_nu_kappa()
             if line.startswith('nu'): #modifies ra (does not change throughout algorithm)
@@ -109,7 +119,7 @@ class SPECTER(Solver):
         self.write_fields(fields)
 
         #run specter
-        subprocess.run(f'mpirun -n {self.pm.nprocs} ./{self.solver}_PROJ', shell = True)
+        subprocess.run(f'mpirun -n {self.nprocs} ./{self.solver}_PROJ', shell = True)
 
         #load evolved fields
         fields = self.load_fields()

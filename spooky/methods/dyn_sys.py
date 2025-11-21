@@ -1,38 +1,284 @@
 from .krylov import GMRES, backsub, arnoldi_eig
 import os
 import numpy as np
+import functools
+
+from .. import pseudo as ps
 
 class DynSys():
-    def __init__(self, pm, solver):
-        '''
-        Parameters:
-        ----------
-            pm: parameters dictionary
-            solver: solver object
-        '''
-        self.pm = pm
+    """General class for Dynamical Systems-based methods.
+
+    Provides decorated version of several functions from grid and solver that can work with a flattened field.
+
+    Methods implemented:
+        - Floquet multipliers
+        - Lyapunov exponents
+
+    Parameters
+    ----------
+    solver: Solver instance
+        Solver to be used.
+    """
+    def __init__(self, solver):
         self.solver = solver
         self.grid = solver.grid
 
-    def load_ic(self):
-        ''' Load initial conditions '''
-        if not self.pm.restart_iN:
-            # Start Newton Solver from initial guess
-            fields = self.solver.load_fields(self.pm.input, self.pm.stat)
+        self.remove_boundary = False
+        if isinstance(self.grid, ps.Grid2D_semi):
+            self.remove_boundary = True
 
-            T, sx = self.pm.T, self.pm.sx
-            # Create directories
-            self.mkdirs()
-            self.write_header()
+    def flatten(self, fields):
+        '''Flattens fields'''
+        if not self.remove_boundary:
+            return np.concatenate([f.flatten() for f in fields])
         else:
-            # Restart Newton Solver from last iteration
-            restart_path = f'output/iN{self.pm.restart_iN:02}/'
-            fields = self.solver.load_fields(restart_path, 0)
-            T, sx = self.get_restart_values(self.pm.restart_iN)
+            return np.concatenate([f[:,1:-1].flatten() for f in fields])
+
+    def unflatten(self, U):
+        '''Unflatten fields'''
+        ll = len(U)//self.solver.num_fields
+        fields = [U[i*ll:(i+1)*ll] for i in range(self.solver.num_fields)]
+        if not self.remove_boundary:
+            fields = [f.reshape(self.grid.shape) for f in fields]
+            return fields
+        else:
+            trim_shape = (self.Nx, self.Nz-2)
+            trim_fields = [f.reshape(trim_shape) for f in fields]
+            fields = [np.pad(f, pad_width = ((0,0),(1,1))) for f in trim_fields] #pads second dimension with zeros before and after
+            return fields
+
+    def flatten_dec(func):
+        """Decorator that allows to work with flattened fields U instead of fields"""
+        @functools.wraps(func)
+        def wrapper(self, U, *args, **kwargs):
+            fields = self.unflatten(U)
+            result = func(self, fields, *args, **kwargs)
+            return self.flatten(result)
+        return wrapper
+
+    @flatten_dec
+    def evolve(self, U, *args, **kwargs):
+        '''Evolves fields U in time T'''
+        return self.solver.evolve(U, *args, **kwargs)
+
+    @flatten_dec
+    def translate(self, U, *args):
+        '''Translates fields by sx in x direction'''
+        return self.grid.translate(U, *args)
+
+    @flatten_dec
+    def deriv_U(self, U, *args):
+        '''Derivatives in x direction of fields'''
+        return self.grid.deriv_fields(U, *args)
+
+    @flatten_dec
+    def sol_project(self, U):
+        '''Solenoidal projection of fields'''
+        return self.solver.inc_proj(U)
+
+    def write_fields(self, U, idx, path):
+        ''' Writes fields to binary file'''
+        fields = self.unflatten(U)
+        return self.solver.write_fields(fields, idx, path)
+
+    def floquet_multipliers(self, fields, T, n, tol, ep0=1e-7, sx=None, b='U', test=False):
+        ''' Calculates Floquet multipliers using the Arnoldi algorithm.
+        Method follows Viswanath (2007), same as Newton method.
+
+        Paramters
+        ---------
+        fields: list of arrays
+            List of fields to be used.
+        T: float
+            Time to evolve in each arnoldi iteration.
+        n: int
+            Number of multiplier to calculate
+        tol: float
+            Tolerance of the Arnoldi iteration
+        ep0: float, optional
+            Perturbation factor. Default is 1e-7.
+        sx: float or None, optional
+            Translation in x direction. Default is None.
+        b: str or np.array, optional
+            Initial guess for Arnoldi. Default is 'U'. Could also take in
+            'random' or a np.array of the same size as U
+
+        Returns
+        -------
+        eigval_H: np.array of complex
+            Floquet multipliers
+        eigvec_H: np.arrays of complex
+            Floquet vectors
+        Q: np.arrays
+            Arnoldi basis
+        '''
 
         U = self.flatten(fields)
-        X = self.form_X(U, T, sx)
-        return X
+        UT = self.evolve(U, T)
+
+        # Translate UT by sx
+        if sx is not None:
+            UT = self.translate(UT, sx)
+
+        def apply_J(dU):
+            ''' Applies J (jacobian of poincare map) matrix to vector dU  '''
+            # 1e-7 factor chosen to balance accuracy and numerical stability
+            epsilon = ep0*np.linalg.norm(U)/np.linalg.norm(dU)
+
+            # Perturb U by epsilon*dU
+            U_pert = U + epsilon*dU
+
+            # Calculate derivative w.r.t. initial fields
+            dUT_dU = self.evolve(U_pert, T)
+
+            if sx is not None:
+                dUT_dU = self.translate(dUT_dU, sx)
+
+            dUT_dU = (dUT_dU - UT)/epsilon
+            return dUT_dU
+
+        if isinstance(b, str):
+            if b == 'U':
+                b = U
+            elif b == 'random':
+                b = np.random.randn(len(U))
+            elif b == 'phases':
+                b = self.phase_shifted_b(fields)
+        elif isinstance(b, np.ndarray):
+            pass
+        else:
+            raise ValueError('b must be one of the given options')
+
+        eigval_H, eigvec_H, Q = arnoldi_eig(apply_J, b, n, tol)
+
+        if test:
+            # Checks if returned eigenvectors satisfy Av=lambda v
+            Aev_r = np.zeros((len(U), n))
+            Aev_i = np.zeros((len(U), n))
+            for i in range(n):
+                ev = Q @ eigvec_H[:,i]
+                Aev_r[:,i] = apply_J(ev.real)
+                Aev_i[:,i] = apply_J(ev.imag)
+
+            return eigval_H, eigvec_H, Q, Aev_r, Aev_i
+
+        return eigval_H, eigvec_H, Q
+
+    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random'):
+        ''' Computes Lyapunov exponents and Kaplan–Yorke dimension via QR iteration.
+
+        This method implements the Benettin algorithm for estimating finite-time
+        Lyapunov exponents by repeatedly evolving a set of orthonormal perturbations
+        over intervals of duration T and reorthonormalizing them using QR decomposition.
+
+        Parameters
+        ----------
+        fields : list of fields
+            Initial fields defining the state U.
+        T : float
+            Integration time between QR reorthonormalizations.
+        n : int
+            Number of Lyapunov exponents to compute.
+        nsteps : int
+            Number of reorthonormalization intervals (total time = nsteps * T)
+        tol : float, optional
+            QR tolerance. Default is 1e-10.
+        ep0 : float, optional
+            Perturbation scaling for the finite-difference tangent map.
+            Default is 1e-7.
+        sx : float, optional
+            Translation in x direction (for translationally invariant systems).
+        b : str or np.ndarray, optional
+            Initial perturbation seed ('random', 'U', 'phases', or user-defined array).
+
+        Returns
+        -------
+        lyap_exponents : np.ndarray, shape (n,)
+            Sorted Lyapunov exponents in descending order.
+        D_KY : float
+            Kaplan–Yorke dimension computed from the cumulative sum of exponents.
+        '''
+
+        U = self.flatten(fields)
+
+        def apply_J(U, dU, Uevol):
+            ''' Applies the finite-time tangent map DΦ_T(U) to perturbation dU. '''
+            epsilon = ep0 * np.linalg.norm(U) / np.linalg.norm(dU)
+            U_pert = U + epsilon * dU
+            dUT_dU = self.evolve(U_pert, T) - Uevol
+            if sx is not None:
+                dUT_dU = self.translate(dUT_dU, sx)
+            return dUT_dU / epsilon
+
+        # --- Initialize orthonormal basis Q ---
+        if isinstance(b, str):
+            if b == 'U':
+                b = U.copy()
+            elif b == 'random':
+                b = np.random.randn(len(U))
+            elif b == 'phases':
+                b = self.phase_shifted_b(fields)
+        elif not isinstance(b, np.ndarray):
+            raise ValueError("b must be 'U', 'random', 'phases', or a NumPy array.")
+
+        Q = np.zeros((len(U), n))
+        Q[:, 0] = b / np.linalg.norm(b)
+        for i in range(1, n):
+            q = np.random.randn(len(U))
+            for j in range(i):
+                q -= np.dot(Q[:, j], q) * Q[:, j]
+            Q[:, i] = q / np.linalg.norm(q)
+
+        # --- Accumulate finite-time Lyapunov exponents ---
+        le_sum = np.zeros(n)
+        for step in range(nsteps):
+            # Propagate basis vectors through tangent map
+            V = np.zeros_like(Q)
+            Uevol = self.evolve(U, T)
+            for i in range(n):
+                V[:, i] = apply_J(U, Q[:, i], Uevol)
+
+            # QR reorthonormalization
+            Q, R = np.linalg.qr(V)
+            diagR = np.abs(np.diag(R))
+            le_sum += np.log(diagR + 1e-300)  # prevent log(0)
+
+            # Re-normalize columns to avoid drift
+            for i in range(n):
+                Q[:, i] /= np.linalg.norm(Q[:, i])
+
+            U = np.copy(Uevol)
+
+        # --- Average over total time ---
+        lyap_exponents = le_sum / (nsteps * T)
+        lyap_exponents = np.sort(lyap_exponents)[::-1]
+
+        # --- Kaplan–Yorke dimension ---
+        S = np.cumsum(lyap_exponents)
+        positive = np.where(S >= 0)[0]
+        if len(positive) > 0:
+            j = positive[-1]
+            if j + 1 < len(S):
+                D_KY = j + S[j] / abs(lyap_exponents[j + 1])
+            else:
+                D_KY = float(j)
+        else:
+            D_KY = 0.0
+
+        return lyap_exponents, D_KY
+
+class UPONewtonSolver(DynSys):
+    """
+    Implements the Newton-Krylov method for computing steady states and
+    periodic orbits in PDE systems (e.g. Kolmogorov flow, Boussinesq
+                                    equations).
+
+    References:
+      - Chandler & Kerswell (2013)
+      - Viswanath (2007)
+    """
+    def __init__(self, solver, T, sx, sp, lda):
+        super().__init__(self, solver)
 
     def form_X(self, U, T=None, sx=None, lda = None):
         ''' Form X vector from fields U, T, sx and lda (if applicable) '''
@@ -45,8 +291,10 @@ class DynSys():
             X = np.append(X, lda)
         return X
 
-    def unpack_X(self, X, arclength = False):
-        '''X could contain extra params sx and lda if searching for RPOs (pm.sx != 0) or using arclength continuation'''
+    def unpack_X(self, X):
+        '''X could contain extra params sx and lda if searching for RPOs (pm.sx
+                                                                          != 0)
+        or using arclength continuation'''
 
         # Determine size of U
         if getattr(self.pm, 'remove_boundary', False):
@@ -54,6 +302,7 @@ class DynSys():
         else:
             dim_U = self.grid.N * self.solver.num_fields
 
+        # Extract U, T, sx, lda from X
         U = X[:dim_U]
         idx = dim_U
 
@@ -65,97 +314,25 @@ class DynSys():
 
         sx = X[idx] if (self.pm.sx is not None) else 0.
 
-        if not arclength:
+        if not self.pm.arclength:
             return U, T, sx
         else:
             lda = X[-1]
             return U, T, sx, lda
 
-    def get_restart_values(self, restart, arclength = False, iA:int|None = None ):
-        ''' Get values from last Newton iteration of T and sx from solver.txt '''
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
-        fname = f'prints{suffix}/solver.txt'
-        iters,T,sx = np.loadtxt(fname, delimiter = ',', skiprows = 1, unpack = True, usecols = (0,2,3))
-        idx_restart = np.argwhere(iters==restart)[0][0] #in case more than 1 restart is needed find row with last iter
-        values =  [T[idx_restart], sx[idx_restart]]
+    def get_restart_values(self, restart, iA: int | None = None):
+        """Get values from last Newton iteration of T and sx from newton.txt"""
+        path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
 
-        if arclength:
-            lda = np.loadtxt(fname, delimiter = ',', skiprows = 1, unpack = True, usecols = 5)
+        # Load data and find restart iteration
+        iters, T, sx = np.loadtxt(path, delimiter=',', skiprows=1, unpack=True, usecols=(0, 2, 3))
+        idx_restart = np.argwhere(iters == restart)[0][0]
+
+        values = [T[idx_restart], sx[idx_restart]]
+        if self.pm.arclength:
+            lda = np.loadtxt(path, delimiter=',', skiprows=1, unpack=True, usecols=5)
             values.append(lda[idx_restart])
         return values
-
-    def flatten(self, fields):
-        '''Flattens fields'''
-        remove_boundary = self.pm.remove_boundary if hasattr(self.pm, 'remove_boundary') else False
-        if not remove_boundary:
-            return np.concatenate([f.flatten() for f in fields])
-        else:
-            return np.concatenate([f[:,1:-1].flatten() for f in fields])
-
-    def unflatten(self, U):
-        '''Unflatten fields'''
-        ll = len(U)//self.solver.num_fields
-        fields = [U[i*ll:(i+1)*ll] for i in range(self.solver.num_fields)]
-        remove_boundary = self.pm.remove_boundary if hasattr(self.pm, 'remove_boundary') else False
-        if not remove_boundary:
-            fields = [f.reshape(self.grid.shape) for f in fields]
-            return fields
-        else:
-            trim_shape = (self.pm.Nx, self.pm.Nz-2)
-            trim_fields = [f.reshape(trim_shape) for f in fields]
-            fields = [np.pad(f, pad_width = ((0,0),(1,1))) for f in trim_fields] #pads second dimension with zeros before and after
-            return fields
-
-    def flatten_dec(func):
-        """Decorator that allows to work with flattened fields U instead of fields"""
-        def wrapper(self, U, *args, **kwargs):
-            fields = self.unflatten(U)
-            result = func(self, fields, *args, **kwargs)
-            return self.flatten(result)
-        return wrapper
-
-    @flatten_dec
-    def evolve(self, U, T, save = False, iN = 0, iA:int|None = None):
-        '''Evolves fields U in time T'''
-        if save:
-            suffix = f'{iA:02}' if iA is not None else ''
-            dir_iN = f'iN{iN:02}/'
-            return self.solver.evolve(U, T, bstep = self.pm.bstep, ostep = self.pm.ostep,\
-                bpath = f'balance{suffix}/{dir_iN}', opath = f'output{suffix}/{dir_iN}')
-        else:
-            return self.solver.evolve(U, T)
-
-    @flatten_dec
-    def translate(self, U, sx):
-        '''Translates fields by sx in x direction'''
-        return self.grid.translate(U, sx)
-
-    @flatten_dec
-    def deriv_U(self, U, ki):
-        '''Derivatives in x direction of fields'''
-        return self.grid.deriv_fields(U, ki)
-
-    @flatten_dec
-    def sol_project(self, U):
-        '''Solenoidal projection of fields'''
-        return self.solver.inc_proj(U)
-
-    def write_fields(self, U, idx, path):
-        ''' Writes fields to binary file'''
-        fields = self.unflatten(U)
-        return self.solver.write_fields(fields, idx, path)
-
-    def apply_proj(self, U, dU, sp):
-        '''Applies projection if sp is True. To dU or U+dU'''
-        if not sp:
-            return U+dU
-
-        if self.pm.sp_dU:
-            dU = self.sol_project(dU)
-            return U+dU
-        else:
-            return self.sol_project(U+dU)
 
     def form_b(self, U, UT):
         "Form RHS of extended Newton system. UT is evolved and translated flattened field"
@@ -169,14 +346,26 @@ class DynSys():
     def norm(self, U):
         return np.linalg.norm(U)
 
+    def apply_proj(self, U, dU, sp):
+        '''Applies projection if sp is True. To dU or U+dU'''
+        if not sp:
+            return U+dU
+
+        if self.pm.sp_dU:
+            dU = self.sol_project(dU)
+            return U+dU
+        else:
+            return self.sol_project(U+dU)
+
     def update_A(self, X, iN):
         '''Creates (extended) Jacobian matrix to be applied to U throughout GMRes'''
         # Compute variables and derivatives used throughout gmres iterations
         U, T, sx = self.unpack_X(X)
 
         # Evolve fields and save output
-        self.mkdirs_iN(iN-1) # save output and bal from previous iN
-        UT = self.evolve(U, T, save = True, iN = iN-1)
+        save_out = True if self.pm.save_outputs == 'all' else False
+        save_bal = True if self.pm.save_balance == 'all' else False
+        UT = self.evolve(U, T, save_out, save_bal, iN=iN-1)
 
         # Translate UT by sx and calculate derivatives
         if self.pm.sx is not None:
@@ -189,11 +378,11 @@ class DynSys():
 
         # Calculate derivatives in time
         if self.pm.T is not None:
-            dUT_dT = self.evolve(UT, self.pm.dt)
-            dUT_dT = (dUT_dT - UT)/self.pm.dt
+            dUT_dT = self.evolve(UT, self.solver.pm.dt)
+            dUT_dT = (dUT_dT - UT)/self.solver.pm.dt
 
-            dU_dt = self.evolve(U, self.pm.dt)
-            dU_dt = (dU_dt - U)/self.pm.dt
+            dU_dt = self.evolve(U, self.solver.pm.dt)
+            dU_dt = (dU_dt - U)/self.solver.pm.dt
         else:
             dUT_dT = dU_dt = np.zeros_like(U) # No evol if T is None
 
@@ -202,8 +391,8 @@ class DynSys():
             ''' Applies A (extended Jacobian) to vector X^t  '''
             dU, dT, ds = self.unpack_X(dX)
 
-            # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = 1e-7*self.norm(U)/self.norm(dU)
+            print(self.norm(U), type(self.pm.eps0), self.norm(dU))
+            epsilon = self.pm.eps0*self.norm(U)/self.norm(dU)
 
             # Perturb U by epsilon*dU and apply solenoidal projection if sp1 = True
             U_pert = self.apply_proj(U, epsilon*dU, self.pm.sp1)
@@ -236,7 +425,11 @@ class DynSys():
 
     def run_newton(self, X):
         '''Iterates Newton-GMRes solver until convergence'''
-        for iN in range(self.pm.restart_iN+1, self.pm.N_newt):
+        pm = self.pm
+        if self.pm.restart_iN == 0:
+            self.write_header_newton()
+
+        for iN in range(pm.restart_iN+1, pm.N_newt):
             # Unpack X
             U, T, sx = self.unpack_X(X)
 
@@ -248,11 +441,12 @@ class DynSys():
             F = self.norm(b) #||b|| = ||F||: rootsearch function
 
             # Write to txts
-            self.write_prints(iN, F, U, sx, T)
+            self.write_newton(iN, F, U, sx, T)
+            self.write_headers(iN)
 
             # Perform GMRes iteration
             # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, iN, self.pm.glob_method)
+            H, beta, Q = GMRES(apply_A, b, pm.N_gmres, pm.tol_gmres, pm.gmres_dir, iN)
 
             # Perform hookstep to adjust solution to trust region
             X, F_new, UT = self.hookstep(X, H, beta, Q, iN)
@@ -261,23 +455,25 @@ class DynSys():
             U, T, sx = self.unpack_X(X)
 
             # Select different initial condition from orbit if solution is not converging
-            if ((F-F_new)/F) < self.pm.tol_nudge:
-                with open('prints/nudge.txt', 'a') as file:
-                    file.write(f'iN = {iN}. frac_nudge = {self.pm.frac_nudge}\n')
+            if ((F-F_new)/F) < pm.tol_nudge:
                 U = self.evolve(U, T*self.pm.frac_nudge)
 
             # Termination condition
-            if (F_new < self.pm.tol_newt) and ((F-F_new)/F < self.pm.tol_improve):
+            if (F_new < pm.tol_newt) and ((F-F_new)/F < pm.tol_improve):
 
-                self.mkdirs_iN(iN)
-                UT = self.evolve(U, T, save = True, iN = iN)
-                if self.pm.sx is not None:
+                # Final evolve to save outputs and balance
+                save_out = True if self.pm.save_outputs in ('all', 'last') else False
+                save_bal = True if self.pm.save_balance in ('all', 'last') else False
+                UT = self.evolve(U, T, save_out, save_bal, iN=iN)
+
+                if pm.sx is not None:
                     UT = self.translate(UT, sx)
                 b = self.form_b(U, UT)
                 F = self.norm(b) #||b|| = ||F||: rootsearch function
                 # Write to txts
-                self.write_prints(iN+1, F, U, sx, T)
+                self.write_newton(iN+1, F, U, sx, T)
                 break
+
 
     def hookstep(self, X, H, beta, Q, iN, arclength:dict|None = None):
         ''' Performs hookstep on solution given by GMRes untill new |F| is less than previous |F| (or max iter of hookstep is reached) '''
@@ -367,9 +563,7 @@ class DynSys():
                 y_norm = self.norm(y0)
                 Delta0 = y_norm #Initial trust region
 
-                suffix = f'{iA:02}' if iA is not None else ''
-                with open(f'prints{suffix}/hookstep/extra_iN{iN:02}.txt', 'a') as file:
-                    file.write(f'{Delta0},{mu},{y_norm},0\n')
+                self.write_trust_region(iN, Delta0, mu, y0, A_, iA)
 
                 mu = self.pm.mu0 #Initialize first nonzero value of mu
                 return y0, mu
@@ -394,97 +588,83 @@ class DynSys():
     def mkdir(self, path):
         os.makedirs(path, exist_ok=True)
 
-    def mkdirs(self, iA:int | None = None):
-        ''' Make directories for solver
-        if iA is given then outputs are saved in a specific arclength iteration'''
+    def _get_path(self, base_dir: str | None, *parts, iA: int | None = None):
+        """Safely join base_dir with optional suffix and subpaths.
+        Adds iA (arclength iteration) suffix if provided."""
+        if base_dir is None:
+            return None
+        if iA is not None:
+            base_dir = f"{base_dir}{iA:02}"
+        os.makedirs(base_dir, exist_ok=True)
+        return os.path.join(base_dir, *parts)
 
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+    def write_header_newton(self, iA: int|None = None):
+        """Writes header to newton.txt file."""
+        path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
+        if path is None:
+            return
 
-        dirs = ['output', 'balance', 'prints']
-        dirs = [dir_+ suffix for dir_ in dirs]
+        header = "iN, |F|, T, sx, |U|"
+        if self.pm.arclength:
+            header += ", lambda, N(X)"
+        print(header, file=open(path, "a"))
 
-        prints_dir = dirs[-1]
-        dirs.extend ([prints_dir+dir_ for dir_ in ('/error_gmres', '/hookstep', '/apply_A')])
+    def write_newton(self, iN, F, U, sx, T, arclength: tuple|None = None, iA: int|None = None):
+        """Writes iteration data to print file."""
+        newton_path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
+        if newton_path is None:
+            return
 
-        if self.solver.solver == 'BOUSS' or self.solver.solver == 'ROTH':
-            dirs.append('bin_tmp')
+        content = f"{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e}"
+        if arclength:
+            content += f",{arclength[0]},{arclength[1]}"
+        print(content, file=open(newton_path, "a"))
 
-        for dir_ in dirs:
-            self.mkdir(dir_)
+    def write_headers(self, iN, iA: int | None = None):
+        """Writes headers to diagnostic files for every Newton iteration iN."""
+        suffix = f'iN{iN:02}.txt'
+        gmres_path = self._get_path(self.pm.gmres_dir, 'gmres_'+suffix, iA=iA)
+        apply_A_path = self._get_path(self.pm.apply_A_dir, 'apply_A_'+suffix, iA=iA)
+        hook_path = self._get_path(self.pm.hookstep_dir, 'hookstep_'+suffix, iA=iA)
+        trust_region_path = self._get_path(self.pm.trust_region_dir, 'trust_region_'+suffix, iA=iA)
 
-    def mkdirs_iN(self, iN, iA:int | None = None):
-        ''' Directories for specific Newton iteration
-        if iA is given then outputs are saved in a specific arclength iteration'''
+        if gmres_path:
+            print('iG, error', file=open(gmres_path, "w"))
 
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+        if hook_path:
+            print('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|', file=open(hook_path, "w"))
 
-        dirs = [f'output{suffix}/iN{iN:02}', f'balance{suffix}/iN{iN:02}']
+        if apply_A_path:
+            lda = (", |dUT/dlda|", ", lda_proj") if self.pm.arclength else ("", "")
+            header = f"|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|{lda[0]}, t_proj, Tx_proj{lda[1]}"
+            print(header, file=open(apply_A_path, "w"))
 
-        for dir_ in dirs:
-            self.mkdir(dir_)
+        if trust_region_path:
+            print("Delta, mu, |y|, cond(A)", file=open(trust_region_path, "w"))
 
-    def write_header(self, arclength = False, iA:int|None=None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+    def write_apply_A(self, iN, norms, t_proj, Tx_proj, lda_proj=None, iA: int | None = None):
+        path = self._get_path(self.pm.apply_A_dir, f"apply_A_iN{iN:02}.txt", iA=iA)
+        if path is None:
+            return
 
-        with open(f'prints{suffix}/solver.txt', 'a') as file:
-            file.write('Iter newt, |F|, T, sx, |U|')
-            if arclength:
-                file.write(', lambda, N(X)')
-            file.write('\n')
+        content = ",".join([f"{norm:.4e}" for norm in norms]) + f",{t_proj:.4e},{Tx_proj:.4e}"
+        if lda_proj:
+            content += f",{lda_proj:.4e}"
+        print(content, file=open(path, "a"))
 
-    def write_prints(self, iN, F, U, sx, T, arclength = None, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
+    def write_hookstep(self, iN, iH, F_new, lin_exp, iA: int | None = None):
+        path = self._get_path(self.pm.hookstep_dir, f"hookstep_iN{iN:02}.txt", iA=iA)
+        if path is None:
+            return
 
-        with open(f'prints{suffix}/solver.txt', 'a') as file1,\
-        open(f'prints{suffix}/error_gmres/iN{iN:02}.txt', 'w') as file2,\
-        open(f'prints{suffix}/hookstep/iN{iN:02}.txt', 'w') as file3,\
-        open(f'prints{suffix}/apply_A/iN{iN:02}.txt', 'w') as file4,\
-        open(f'prints{suffix}/hookstep/extra_iN{iN:02}.txt', 'w') as file5:
+        print(f"{iH:02},{F_new:.4e},{lin_exp:.4e}", file=open(path, "a"))
 
-            file1.write(f'{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e}')
-            if arclength:
-                file1.write(f',{arclength[0]},{arclength[1]}') #writes lambda (arclength[0]) and N(X) (arclength[1])
-            file1.write('\n')
-            file2.write('iG, error\n')
-            file3.write('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|\n')
+    def write_trust_region(self, iN, Delta, mu, y, A, iA: int | None = None):
+        path = self._get_path(self.pm.trust_region_dir, f"trust_region_iN{iN:02}.txt", iA=iA)
+        if path is None:
+            return
 
-            if arclength:
-                lda_str = ', |dUT_dlda|'
-            else:
-                lda_str = ''
-            file4.write(f'|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|{lda_str}, t_proj, Tx_proj')
-            if arclength:
-                file4.write(f', lda_proj')
-            file4.write('\n')
-            file5.write('Delta, mu, |y|, cond(A)\n')
-
-    def write_apply_A(self, iN, norms, t_proj, Tx_proj, lda_proj = None, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
-
-        with open(f'prints{suffix}/apply_A/iN{iN:02}.txt', 'a') as file:
-            file.write(','.join([f'{norm:.4e}' for norm in norms]) + f',{t_proj:.4e},{Tx_proj:.4e}')
-            if lda_proj:
-                file.write(f',{lda_proj:.4e}')
-            file.write('\n')
-
-    def write_trust_region(self, iN, Delta, mu, y, A, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
-
-        with open(f'prints{suffix}/hookstep/extra_iN{iN:02}.txt', 'a') as file:
-            file.write(f'{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}\n')
-
-    def write_hookstep(self, iN, iH, F_new, lin_exp, iA:int|None = None):
-        # Convert iA to a string prefix if it's provided
-        suffix = f'{iA:02}' if iA is not None else ''
-
-        with open(f'prints{suffix}/hookstep/iN{iN:02}.txt', 'a') as file:
-            file.write(f'{iH:02},{F_new:.4e},{lin_exp:.4e}\n')
+        print(f"{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}", file=open(path, "a"))
 
     def phase_shifted_b(self, fields):
         """Generate b vector by modifying phases in Fourier space."""
@@ -513,128 +693,6 @@ class DynSys():
         b_vector = self.flatten([f.flatten() for f in fields_proj])
         return b_vector
 
-
-    def floq_exp(self, X, n, tol, b = 'U'):
-        ''' Calculates Floquet exponents of periodic orbit '''
-        ''' X: (U,T,sx) of converged periodic orbit, n: number of exponents, tol: tolerance of Arnoldi '''
-
-        from warnings import warn
-        warn('This function is deprecated. Use floquet_exponents instead.',
-             DeprecationWarning)
-
-        # Unpack X
-        U, T, sx = self.unpack_X(X)
-
-        UT = self.evolve(U, T)
-        # Translate UT by sx
-        if self.pm.sx is not None:
-            UT = self.translate(UT, sx)
-
-        def apply_J(dU):
-            ''' Applies J (jacobian of poincare map) matrix to vector dU  '''
-            # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = 1e-7*self.norm(U)/self.norm(dU)
-
-            # Perturb U by epsilon*dU
-            U_pert = U + epsilon*dU
-
-            # Calculate derivative w.r.t. initial fields
-            dUT_dU = self.evolve(U_pert, T)
-            if self.pm.sx is not None:
-                dUT_dU = self.translate(dUT_dU,sx)
-            dUT_dU = (dUT_dU - UT)/epsilon
-            return dUT_dU
-
-        if b == 'U':
-            b = U
-        elif b == 'random':
-            b = np.random.randn(len(U))
-        else:
-            raise ValueError('b must be U or random')
-
-        eigval_H, eigvec_H, Q = arnoldi_eig(apply_J, b, n, tol)
-
-        return eigval_H, eigvec_H, Q
-
-    def lyap_exp(self, fields, T, n, tol, ep0=1e-7, sx=None, b='U'):
-        from warnings import warn
-        warn('This function is deprecated. Use floquet_exponents instead.',
-             DeprecationWarning)
-        return self.floquet_exponents(fields, T, n, tol, ep0, sx, b)
-
-    def floquet_exponents(self, fields, T, n, tol, ep0=1e-7, sx=None, b='U', test=False):
-        ''' Calculates Floquet exponents
-
-        To get the Lyapunov exponents do log(eigval_H)/T
-
-        Paramters
-        ---------
-        fields: list of fields.
-        T: time to evolve in each arnoldi iteration
-        n: number of exponents,
-        tol: tolerance of Arnoldi
-        ep0: perturbation factor, optional, default=1e-7
-        sx: translation in x direction, optional, default=None
-        b: initial guess for Arnoldi, optional, default='U'. Could also take in 'random'
-        or a np.array of the same size as U
-
-        Returns
-        -------
-        eigval_H: Lyapunov exponents
-        eigvec_H: Lyapunov vectors
-        Q: Arnoldi basis
-        '''
-
-        U = self.flatten(fields)
-        UT = self.evolve(U, T)
-
-        # Translate UT by sx
-        if sx is not None:
-            UT = self.translate(UT, sx)
-
-        def apply_J(dU):
-            ''' Applies J (jacobian of poincare map) matrix to vector dU  '''
-            # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = ep0*self.norm(U)/self.norm(dU)
-
-            # Perturb U by epsilon*dU
-            U_pert = U + epsilon*dU
-
-            # Calculate derivative w.r.t. initial fields
-            dUT_dU = self.evolve(U_pert, T)
-
-            if sx is not None:
-                dUT_dU = self.translate(dUT_dU, sx)
-
-            dUT_dU = (dUT_dU - UT)/epsilon
-            return dUT_dU
-
-        if isinstance(b, str):
-            if b == 'U':
-                b = U
-            elif b == 'random':
-                b = np.random.randn(len(U))
-            elif b == 'phases':
-                b = self.phase_shifted_b(fields)
-        elif isinstance(b, np.ndarray):
-            pass
-        else:
-            raise ValueError('b must be one of the given options')
-
-        eigval_H, eigvec_H, Q = arnoldi_eig(apply_J, b, n, tol)
-
-        if test:
-            # Checks if returned eigenvectors satisfy Av=lambda v
-            Aev_r = np.zeros((len(U), n))
-            Aev_i = np.zeros((len(U), n))
-            for i in range(n):
-                ev = Q @ eigvec_H[:,i]
-                Aev_r[:,i] = apply_J(ev.real)
-                Aev_i[:,i] = apply_J(ev.imag)
-
-            return eigval_H, eigvec_H, Q, Aev_r, Aev_i
-
-        return eigval_H, eigvec_H, Q
 
     def run_arclength(self, X0, X1, X_restart = None, iA:int|None = None):
         '''Iterates Newton-GMRes solver until convergence using arclength continuation
@@ -673,11 +731,12 @@ class DynSys():
             F = self.norm(b[:-1]) # F only includes diff between U and UT, not arclength constraint
 
             # Write to txts
-            self.write_prints(iN, F, U, sx, T, (lda*self.pm.norm, N), iA)
+            self.write_newton(iN, F, U, sx, T, (lda*self.pm.norm, N), iA)
+            self.write_headers(iN, iA)
 
             # Perform GMRes iteration
             # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, iN, self.pm.glob_method, iA)
+            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, self.pm.gmres_dir, iN, iA)
 
             # Perform hookstep to adjust solution to trust region
             X, F_new, UT = self.hookstep(X, H, beta, Q, iN, arclength = {'iA':iA, 'dX_dr':dX_dr, 'dr':dr, 'X1':X1})
@@ -687,7 +746,6 @@ class DynSys():
 
             # Termination condition
             if (F_new < self.pm.tol_newt) and ((F-F_new)/F < self.pm.tol_improve):
-                self.mkdirs_iN(iN, iA)
                 UT = self.evolve(U, T, save = True, iN = iN, iA = iA)
                 if self.pm.sx is not None:
                     UT = self.translate(UT, sx)
@@ -697,22 +755,28 @@ class DynSys():
                 b = np.append(b, -N)
                 F = self.norm(b[:-1]) # F only includes diff between U and UT, not arclength constraint
                 # Write to txts
-                self.write_prints(iN+1, F, U, sx, T, (lda*self.pm.norm, N), iA)
+                self.write_newton(iN+1, F, U, sx, T, (lda*self.pm.norm, N), iA)
 
                 if iA is not None:
                     self.save_converged(X, iA)
                 return X
 
     def save_converged(self, X, iA):
-        U, T, sx, lda = self.unpack_X(X, arclength = True)
-        path = f'converged/iA{iA:02}'
-        self.mkdir(path)
-        if iA == 0:
-            print('iA, T, sx, Ra, |U|', file= open('converged/solver.txt', 'a'))
+        """Save converged solution fields and metadata."""
+        U, T, sx, lda = self.unpack_X(X, arclength=True)
 
-        print(f'{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}',\
-        file = open('converged/solver.txt', 'a'))
-        self.write_fields(U, idx = 0, path = path)
+        # Use parameter-driven converged directory
+        path = self._get_path(self.pm.converged_dir, "solver.txt", iA=iA)
+        os.makedirs(path, exist_ok=True)
+
+        solver_file = os.path.join(path, "solver.txt")
+        if iA == 0 and not os.path.exists(solver_file):
+            print("iA, T, sx, lda, |U|", file=open(solver_file, "a"))
+
+        print(f"{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}",
+            file=open(solver_file, "a"))
+
+        self.write_fields(U, idx=0, path=path)
 
     def update_lda(self, lda):
         '''Updates lambda parameter in solver. norm: normalization parameter'''
@@ -741,7 +805,6 @@ class DynSys():
         self.update_lda(lda)
 
         # Evolve fields and save output
-        self.mkdirs_iN(iN-1, iA) # save output and bal from previous iN
         UT = self.evolve(U, T, save = True, iN = iN-1, iA = iA)
 
         # Translate UT by sx and calculate derivatives
@@ -755,11 +818,11 @@ class DynSys():
 
         # Calculate derivatives in time
         if self.pm.T is not None:
-            dUT_dT = self.evolve(UT, self.pm.dt)
-            dUT_dT = (dUT_dT - UT)/self.pm.dt
+            dUT_dT = self.evolve(UT, self.solver.pm.dt)
+            dUT_dT = (dUT_dT - UT)/self.solver.pm.dt
 
-            dU_dt = self.evolve(U, self.pm.dt)
-            dU_dt = (dU_dt - U)/self.pm.dt
+            dU_dt = self.evolve(U, self.solver.pm.dt)
+            dU_dt = (dU_dt - U)/self.solver.pm.dt
         else:
             dUT_dT = dU_dt = np.zeros_like(U) # No evol if T is None
 
@@ -812,7 +875,6 @@ class DynSys():
 
         return apply_A, UT
 
-
     def run_arc_auto(self, X0, X1, X_restart = None):
         '''Iterates Newton-GMRes solver until convergence using arclength continuation
         Once a solution has converged it automatically uses the new converged solution as
@@ -822,8 +884,7 @@ class DynSys():
 
         for iA in range(start_iA, self.pm.N_arc):
             if (self.pm.restart_iN == 0) or (iA != start_iA):
-                self.mkdirs(iA)
-                self.write_header(arclength = True, iA = iA)
+                self.write_header_newton(iA = iA)
 
             X = self.run_arclength(X0, X1, X_restart, iA)
             X0 = X1

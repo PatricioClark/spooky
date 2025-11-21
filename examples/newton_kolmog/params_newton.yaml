@@ -1,0 +1,72 @@
+# ============================================================
+# Newton–Krylov–Hookstep parameters
+# ============================================================
+
+# Input/output directories
+input_dir: input
+start_idx: 0
+output_dir: output
+balance_dir: balance
+save_outputs: all    # Options: "all", "last", "none"
+save_balance: all
+
+# Print/logging directories
+newton_dir: reports
+gmres_dir: reports/gmres
+apply_A_dir: reports/apply_A
+hookstep_dir: reports/hookstep
+trust_region_dir: reports/trust_region
+
+# ============================================================
+# Newton iteration control
+# ============================================================
+
+T: 5.8              # Initial period guess
+sx: 0.0             # Initial spatial shift (for RPOs)
+Tconst: null        # Fixed evolution time for steady states (if T = null)
+remove_boundary: false
+
+N_newt: 50          # Max Newton iterations
+tol_newt: 1.0e-10     # Convergence tolerance
+tol_improve: 1.0e-3   # Relative improvement threshold
+tol_nudge: 1.0e-3     # Nudge threshold
+frac_nudge: 0.0     # Fraction of period for orbit nudge
+restart_iN: 0       # Restart iteration index
+
+# ============================================================
+# GMRES settings
+# ============================================================
+
+N_gmres: 50
+tol_gmres: 1.0e-3
+eps0: 1.0e-6
+
+# ============================================================
+# Hookstep / trust-region
+# ============================================================
+
+N_hook: 50
+c: 0.5
+reduc_reg: 0.5
+mu0: 1.0e-6
+mu_inc: 1.5
+
+# ============================================================
+# Solenoidal projections
+# ============================================================
+
+sp1: false
+sp2: false
+sp_dU: false
+
+# ============================================================
+# Arclength continuation (disabled here)
+# ============================================================
+
+arclength: false
+N_arc: 0
+restart_iA: 0
+T0: null
+sx0: null
+lda0: 1.0
+converged_dir: converged

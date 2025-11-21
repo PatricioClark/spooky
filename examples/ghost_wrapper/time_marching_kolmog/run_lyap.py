@@ -4,26 +4,18 @@ GHOST wrapper example for Kolmogorov Flow
 
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 
-import spooky as ps
+import spooky as sp
 from spooky.solvers import GHOST
 from spooky.methods import DynSys
 import params as pm
 
-pm.Lx = 2*np.pi*pm.L
-pm.Ly = 2*np.pi*pm.L
-
 # Initialize solver
-grid = ps.Grid2D(pm)
-solver = GHOST(pm)
-lyap = DynSys(pm, solver)
+grid = sp.Grid2D(Lx=pm.Lx, Ly=pm.Ly, Nx=pm.Nx, Ny=pm.Ny, dt=pm.dt)
+solver = GHOST(grid, nu=pm.nu, nprocs=pm.nprocs, precision=pm.precision, ext=pm.ext)
+lyap = DynSys(solver)
 
-# If loading initial velocity field
-# path = 'input'
-# fields = solver.load_fields(path, 0)
-
-# If writing initial velocity field
+# Initial velocity field
 uu = np.cos(2*np.pi*1.0*grid.yy/pm.Lx) + 0.1*np.sin(2*np.pi*2.0*grid.yy/pm.Lx)
 vv = np.cos(2*np.pi*1.0*grid.xx/pm.Lx) + 0.2*np.cos(3*np.pi*2.0*grid.yy/pm.Lx)
 
@@ -34,14 +26,8 @@ ffields = grid.inc_proj(ffields)
 fields_i = [grid.inverse(ff) for ff in ffields]
 
 # Calculate n Lyapunov exponents
-n = 5
 T = 1.0
+n = 5
+nsteps = 50
 
-eigval_H, eigvec_H, Q = lyap.lyap_exp(fields, T, n, tol = 1e-10)
-
-# Save Lyapunov exponents
-spath = f'lyap/'
-os.makedirs(spath, exist_ok=True)
-np.save(f'{spath}lyap_exp.npy', eigval_H)
-np.save(f'{spath}eigvec_H.npy', eigvec_H)
-np.save(f'{spath}Q.npy', Q)
+lyap_exp, D_KY = lyap.lyapunov_exponents(fields_i, T, n, nsteps, tol = 1e-10)

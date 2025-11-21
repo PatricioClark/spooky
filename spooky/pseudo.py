@@ -2,32 +2,32 @@
 import jax.numpy as np
 
 class Grid1D:
-    def __init__(self, pm):
-        xx, dx = np.linspace(0, pm.Lx, pm.Nx, endpoint=False, retstep=True)
-        # tt   = np.arange(0, getattr(pm, 'T', 1), pm.dt)
+    def __init__(self, Lx, Nx, dt):
+        xx, dx = np.linspace(0, Lx, Nx, endpoint=False, retstep=True)
 
-        ki = np.fft.rfftfreq(pm.Nx, 1/pm.Nx).astype(int)
-        kx = 2.0*np.pi*np.fft.rfftfreq(pm.Nx, dx) 
+        ki = np.fft.rfftfreq(Nx, 1/Nx).astype(int)
+        kx = 2.0*np.pi*np.fft.rfftfreq(Nx, dx) 
         k2 = kx**2
         kk = np.sqrt(k2)
-
+        
+        self.Lx = Lx
         self.xx = xx
         self.dx = dx
-        # self.tt = tt
-        self.dt = pm.dt
+        self.dt = dt
 
         self.kx = kx
         self.k2 = k2
         self.kk = kk
         self.kr = ki
 
-        self.N = pm.Nx
-        self.shape = (pm.Nx,)
+        self.N = Nx
+        self.Nx = Nx
+        self.shape = (Nx,)
 
         # Norm and de-aliasing
-        self.norm = 1.0/(pm.Nx**2)
+        self.norm = 1.0/(Nx**2)
         self.zero_mode = 0
-        self.dealias_modes = (self.kr > pm.Nx/3)
+        self.dealias_modes = (self.kr > Nx/3)
 
     @staticmethod
     def forward(ui):
@@ -86,24 +86,26 @@ class Grid1D:
 
 
 class Grid2D(Grid1D):
-    def __init__(self, pm):
-        super().__init__(pm)
+    def __init__(self, Lx, Ly, Nx, Ny, dt):
+        super().__init__(Lx, Nx, dt)
 
-        xi, dx = np.linspace(0, pm.Lx, pm.Nx, endpoint=False, retstep=True)
-        yi, dy = np.linspace(0, pm.Ly, pm.Ny, endpoint=False, retstep=True)
+        xi, dx = np.linspace(0, Lx, Nx, endpoint=False, retstep=True)
+        yi, dy = np.linspace(0, Ly, Ny, endpoint=False, retstep=True)
         xx, yy = np.meshgrid(xi, yi, indexing='ij')
 
-        kx = 2.0*np.pi*np.fft.fftfreq(pm.Nx, dx) 
-        ky = 2.0*np.pi*np.fft.rfftfreq(pm.Ny, dy)
+        kx = 2.0*np.pi*np.fft.fftfreq(Nx, dx) 
+        ky = 2.0*np.pi*np.fft.rfftfreq(Ny, dy)
         kx, ky = np.meshgrid(kx, ky, indexing='ij')
         k2 = kx**2 + ky**2
         kk = np.sqrt(k2)
 
-        ki = np.fft.fftfreq(pm.Nx, 1/pm.Nx)
-        kj = np.fft.rfftfreq(pm.Ny, 1/pm.Ny)
+        ki = np.fft.fftfreq(Nx, 1/Nx)
+        kj = np.fft.rfftfreq(Ny, 1/Ny)
         ki, kj = np.meshgrid(ki, kj, indexing='ij')
-        kr = (ki/pm.Nx)**2 + (kj/pm.Ny)**2
+        kr = (ki/Nx)**2 + (kj/Ny)**2
 
+        self.Lx = Lx
+        self.Ly = Ly
         self.xx = xx
         self.yy = yy
         self.dy = dy
@@ -116,12 +118,13 @@ class Grid2D(Grid1D):
         self.kk = kk
         self.kr = kr
 
-        self.N = pm.Nx*pm.Ny
-        self.shape = (pm.Nx, pm.Ny)
-
+        self.Nx = Nx
+        self.Ny = Ny
+        self.N  = Nx*Ny
+        self.shape = (Nx, Ny)
 
         # Norm, de-aliasing and solenoidal mode proyector
-        self.norm = 1.0/(pm.Nx**2*pm.Ny**2)
+        self.norm = 1.0/(Nx**2*Ny**2)
         self.zero_mode = (0, 0)
         self.dealias_modes = (kr > 1/9)
 
@@ -149,18 +152,22 @@ class Grid2D(Grid1D):
 
 class Grid2D_semi(Grid1D):
     ''' 2D grid periodic only in the horizontal direction. To be used with the SPECTER wrapper '''
-    def __init__(self, pm):
-        super().__init__(pm)
-        zi, dz = np.linspace(0, pm.Lz, pm.Nz, endpoint=False, retstep=True)
+    def __init__(self, Lx, Lz, Nx, Nz, dt):
+        super().__init__(Lx, Nx, dt)
+        zi, dz = np.linspace(0, Lz, Nz, endpoint=False, retstep=True)
         kx, zz = np.meshgrid(self.kx, zi, indexing='ij')
 
+        self.Lx = Lx
+        self.Lz = Lz
         self.zi = zi
         self.dz = dz
         self.zz = zz
         self.kx = kx
 
-        self.N = pm.Nx*pm.Nz
-        self.shape = (pm.Nx, pm.Nz)
+        self.Nx = Nx
+        self.Nz = Nz
+        self.N  = Nx*Nz
+        self.shape = (Nx, Nz)
 
     @staticmethod
     def forward(ui):
@@ -175,27 +182,30 @@ class Grid2D_semi(Grid1D):
 
 
 class Grid3D(Grid1D):
-    def __init__(self, pm):
-        super().__init__(pm)
+    def __init__(self, Lx, Ly, Lz, Nx, Ny, Nz, dt):
+        super().__init__(Lx, Nx, dt)
 
-        xi, dx = np.linspace(0, pm.Lx, pm.Nx, endpoint=False, retstep=True)
-        yi, dy = np.linspace(0, pm.Ly, pm.Ny, endpoint=False, retstep=True)
-        zi, dz = np.linspace(0, pm.Lz, pm.Nz, endpoint=False, retstep=True)
+        xi, dx = np.linspace(0, Lx, Nx, endpoint=False, retstep=True)
+        yi, dy = np.linspace(0, Ly, Ny, endpoint=False, retstep=True)
+        zi, dz = np.linspace(0, Lz, Nz, endpoint=False, retstep=True)
         xx, yy, zz = np.meshgrid(xi, yi, zi, indexing='ij')
 
-        kx = 2.0*np.pi*np.fft.fftfreq(pm.Nx, dx) 
-        ky = 2.0*np.pi*np.fft.fftfreq(pm.Ny, dy)
-        kz = 2.0*np.pi*np.fft.rfftfreq(pm.Nz, dz)
+        kx = 2.0*np.pi*np.fft.fftfreq(Nx, dx) 
+        ky = 2.0*np.pi*np.fft.fftfreq(Ny, dy)
+        kz = 2.0*np.pi*np.fft.rfftfreq(Nz, dz)
         kx, ky, kz = np.meshgrid(kx, ky, kz, indexing='ij')
         k2 = kx**2 + ky**2 + kz**2
         kk = np.sqrt(k2)
 
-        ki = np.fft.fftfreq(pm.Nx, 1/pm.Nx)
-        kj = np.fft.fftfreq(pm.Ny, 1/pm.Ny)
-        kl = np.fft.rfftfreq(pm.Nz, 1/pm.Nz)
+        ki = np.fft.fftfreq(Nx, 1/Nx)
+        kj = np.fft.fftfreq(Ny, 1/Ny)
+        kl = np.fft.rfftfreq(Nz, 1/Nz)
         ki, kj, kl = np.meshgrid(ki, kj, kl, indexing='ij')
-        kr = (ki/pm.Nx)**2 + (kj/pm.Ny)**2 + (kl/pm.Nz)**2
+        kr = (ki/Nx)**2 + (kj/Ny)**2 + (kz/Nz)**2
 
+        self.Lx = Lx
+        self.Ly = Ly
+        self.Lz = Lz
         self.xx = xx
         self.yy = yy
         self.zz = zz
@@ -214,11 +224,14 @@ class Grid3D(Grid1D):
         self.kk = kk
         self.kr = kr
 
-        self.N = pm.Nx*pm.Ny*pm.Nz
-        self.shape = (pm.Nx, pm.Ny, pm.Nz)
+        self.Nx = Nx
+        self.Ny = Ny
+        self.Nz = Nz
+        self.N  = Nx*Ny*Nz
+        self.shape = (Nx, Ny, Nz)
 
         # Norm, de-aliasing and solenoidal mode proyector
-        self.norm = 1.0/(pm.Nx**2*pm.Ny**2*pm.Nz**2)
+        self.norm = 1.0/(Nx**2*Ny**2*Nz**2)
         self.zero_mode = (0, 0, 0)
         self.dealias_modes = (self.kr > 1/9)
 

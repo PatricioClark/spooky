@@ -1,7 +1,7 @@
 ! General configuration flags
 &status
-idir = "outkol_ghost" 
-odir = "outkol_ghost" 
+idir = "output" 
+odir = "output" 
 stat = 1    ! last binary file if restarting an old run
 mult = 1         ! decreases the time step
 bench = 0        ! benchmark mode if 1
@@ -12,7 +12,7 @@ trans = 1        ! computes energy transfer if 1
 ! Parameters for time integration
 &parameter
 dt = 0.001   ! time step
-step = 100000      ! total number of steps
+step = 1001      ! total number of steps
 tstep = 200 !steps between saving fields
 sstep = 0 !number of steps between spectrum output
 cstep = 100 !steps between writing global quantities

@@ -18,16 +18,14 @@ class Solver(abc.ABC):
     num_fields: int
     dim_fields: int
 
-    def __init__(self, pm):
+    def __init__(self, grid: ps.Grid1D | ps.Grid2D | ps.Grid2D_semi | ps.Grid3D):
         ''' Initializes the solver
 
         Parameters:
         ----------
-            pm: parameter dictionary
+            grid: Instance of Grid*D
         '''
-        self.pm = pm
-        self.pm.dim = self.dim_fields
-        self.grid: ps.Grid1D | ps.Grid2D | ps.Grid2D_semi | ps.Grid3D
+        self.grid = grid 
 
     @abc.abstractmethod
     def evolve(self, fields, T, bstep=None, ostep=None, sstep=None, bpath = '', opath = '', spath = ''):
