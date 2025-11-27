@@ -19,11 +19,22 @@ class PseudoSpectral(Solver, abc.ABC):
         super().__init__(grid)
         self.rkord = rkord
 
-    def evolve(self, fields, T, bstep=None, ostep=None, sstep=None, bpath = '', opath = '', spath = '', write_outputs=True):
+    def evolve(self,
+               fields,
+               T,
+               bstep=None,
+               ostep=None,
+               sstep=None,
+               bpath='',
+               opath='',
+               spath='',
+               write_outputs=True,
+               realfields=True):
         ''' Evolves velocity fields to time T '''
 
         # Forward transform
-        fields = [self.grid.forward(ff) for ff in fields]
+        if realfields:
+            fields = [self.grid.forward(ff) for ff in fields]
 
         Nt = int(T/self.grid.dt)
         for step in range(Nt+1):
@@ -50,7 +61,9 @@ class PseudoSpectral(Solver, abc.ABC):
             self.write_outputs(fields, Nt, bstep, ostep, sstep, bpath, opath, spath, final=True)
 
         # Inverse transform
-        fields = [self.grid.inverse(ff) for ff in fields]
+        if realfields:
+            fields = [self.grid.inverse(ff) for ff in fields]
+
         return fields
 
     @abc.abstractmethod
