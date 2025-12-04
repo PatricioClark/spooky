@@ -29,7 +29,7 @@ class KuramotoSivashinsky(PseudoSpectral):
                  rkord=2,
                  ext=4):
         super().__init__(grid, rkord=rkord)
-        self.nu = 1.0
+        self.nu = nu
         self.ext = ext
 
     @apply_jit
