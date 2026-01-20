@@ -30,4 +30,4 @@ T = 1.0
 n = 5
 nsteps = 50
 
-lyap_exp, D_KY = lyap.lyapunov_exponents(fields_i, T, n, nsteps, tol = 1e-10)
+lyap_exp, D_KY, _  = lyap.lyapunov_exponents(fields_i, T, n, nsteps, tol = 1e-10)
