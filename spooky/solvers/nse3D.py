@@ -21,16 +21,21 @@ class NSE3D(PseudoSpectral):
     num_fields = 3
     dim_fields = 3
 
-    def __init__(self, pm, kf=4, f0=1., ftypes=['uu', 'vv', 'ww']):
-        super().__init__(pm)
-        self.grid = ps.Grid3D(pm)
-        self.ftypes = ftypes
+    def __init__(self,
+                 grid: ps.Grid3D,
+                 nu=1.0,
+                 kf=4,
+                 f0=1.,
+                 rkord=2,
+                 ext=4):
+        super().__init__(grid, rkord=rkord)
         self.solver = 'NSE3D'
+        self.ext = ext
 
         # Forcing
         self.kf = kf
         self.f0 = f0
-        self.fx = f0*xnp.sin(2*np.pi*kf*self.grid.yy/pm.Ly)
+        self.fx = f0*xnp.sin(2*np.pi*kf*self.grid.yy/self.grid.Ly)
         self.fx = self.grid.forward(self.fx)
         self.fy = xnp.zeros_like(self.fx, dtype=complex)
         self.fz = xnp.zeros_like(self.fx, dtype=complex)
@@ -67,29 +72,30 @@ class NSE3D(PseudoSpectral):
         # Equations
         fu = fup + (dt/oo) * (
             - gx
-            - self.pm.nu * self.grid.k2 * fu 
+            - self.nu * self.grid.k2 * fu 
             + self.fx
             )
 
         fv = fvp + (dt/oo) * (
             - gy
-            - self.pm.nu * self.grid.k2 * fv 
+            - self.nu * self.grid.k2 * fv 
             + self.fy
             )
 
         fw = fwp + (dt/oo) * (
             - gz
-            - self.pm.nu * self.grid.k2 * fw 
+            - self.nu * self.grid.k2 * fw 
             + self.fz
             )
 
         # de-aliasing
-        fu = fu.at[self.grid.zero_mode].set(0.0)
-        fu = fu.at[self.grid.dealias_modes].set(0.0)
-        fw = fw.at[self.grid.dealias_modes].set(0.0)
-        fv = fv.at[self.grid.zero_mode].set(0.0)
-        fv = fv.at[self.grid.dealias_modes].set(0.0)
-        fw = fw.at[self.grid.dealias_modes].set(0.0)
+        fu = index_update(fu, self.grid.zero_mode, 0.0)
+        fv = index_update(fv, self.grid.zero_mode, 0.0)
+        fw = index_update(fw, self.grid.zero_mode, 0.0)
+
+        fu = index_update(fu, self.grid.dealias_mode, 0.0)
+        fv = index_update(fv, self.grid.dealias_mode, 0.0)
+        fw = index_update(fw, self.grid.dealias_mode, 0.0)
 
         return [fu, fv, fw]
 
@@ -99,22 +105,22 @@ class NSE3D(PseudoSpectral):
     def outs(self, fields, step, opath):
         uu = self.grid.inverse(fields[0])
         vv = self.grid.inverse(fields[1])
-        np.save(os.path.join(opath,f'uu.{step:0{self.pm.ext}}'), uu)
-        np.save(os.path.join(opath,f'vv.{step:0{self.pm.ext}}'), vv)
+        np.save(os.path.join(opath,f'uu.{step:0{self.ext}}'), uu)
+        np.save(os.path.join(opath,f'vv.{step:0{self.ext}}'), vv)
 
     def balance(self, fields, step, bpath):
         eng = self.grid.energy(fields)
         ens = self.grid.enstrophy(fields)
-        dis = - 2 * self.pm.nu * ens
+        dis = - 2 * self.nu * ens
         inj = self.injection(fields, [self.fx, self.fy])
 
-        bal = [f'{self.pm.dt*step:.4e}', f'{eng:.6e}', f'{dis:.6e}', f'{inj:.6e}']
+        bal = [f'{self.grid.dt*step:.4e}', f'{eng:.6e}', f'{dis:.6e}', f'{inj:.6e}']
         with open(os.path.join(bpath, 'balance.dat'), 'a') as output:
             print(*bal, file=output)
 
     def load_fields(self, path, step, ext = None):
         if not ext:
-            ext = self.pm.ext
+            ext = self.ext
         uu = np.load(os.path.join(path, f'uu.{step:0{ext}}.npy'))
         vv = np.load(os.path.join(path, f'vv.{step:0{ext}}.npy'))
         return [uu, vv]
