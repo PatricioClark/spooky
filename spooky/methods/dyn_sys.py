@@ -164,7 +164,7 @@ class DynSys():
 
         return eigval_H, eigvec_H, Q
 
-    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random'):
+    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random', return_hist=False):
         ''' Computes Lyapunov exponents and Kaplan–Yorke dimension via QR iteration.
 
         This method implements the Benettin algorithm for estimating finite-time
@@ -190,6 +190,8 @@ class DynSys():
             Translation in x direction (for translationally invariant systems).
         b : str or np.ndarray, optional
             Initial perturbation seed ('random', 'U', 'phases', or user-defined array).
+        return_hist : bool, optional
+            If True, also returns the history of Lyapunov exponents at each step.
 
         Returns
         -------
@@ -197,6 +199,8 @@ class DynSys():
             Sorted Lyapunov exponents in descending order.
         D_KY : float
             Kaplan–Yorke dimension computed from the cumulative sum of exponents.
+        le_hist : np.ndarray, shape (nsteps, n), optional
+            History of Lyapunov exponents at each reorthonormalization step.
         '''
 
         U = self.flatten(fields)
@@ -272,6 +276,9 @@ class DynSys():
                 D_KY = float(j)
         else:
             D_KY = 0.0
+
+        if not return_hist:
+            return lyap_exponents, D_KY
 
         return lyap_exponents, D_KY, le_hist
 
