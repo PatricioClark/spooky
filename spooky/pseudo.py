@@ -69,6 +69,11 @@ class Grid1D:
         ens = 0.5*self.avg(self.k2*u2)
         return ens
 
+    def palinstrophy(self, fields):
+        u2  = self.inner(fields, fields)
+        ens = 0.5*self.avg((self.k2**4)*u2)
+        return ens
+
     def translate(self, fields, sx):
         # Forward transform
         f = [self.forward(ff) for ff in fields]
