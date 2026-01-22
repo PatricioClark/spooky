@@ -1,5 +1,6 @@
 ''' Definitions of 1-, 2- and 3-D periodic grids '''
 from ._backend import xnp, index_update
+from ._backend import split_key, random_uniform
 
 class Grid1D:
     def __init__(self, Lx, Nx, dt):
@@ -135,6 +136,7 @@ class Grid2D(Grid1D):
 
         # Incompressiblity projector, careful not to divide by zero
         kk2 = index_update(k2, self.zero_mode, 1.0)
+        self.kk2 = kk2
         self.pxx = 1.0 - self.kx**2/kk2
         self.pyy = 1.0 - self.ky**2/kk2
         self.pxy = - self.kx*self.ky/kk2
@@ -241,6 +243,7 @@ class Grid3D(Grid1D):
         self.dealias_modes = (self.kr > 1/9)
 
         kk2 = index_update(k2, self.zero_mode, 1.0)
+        self.kk2 = kk2
         self.pxx = 1.0 - self.kx**2/kk2
         self.pyy = 1.0 - self.ky**2/kk2
         self.pzz = 1.0 - self.kz**2/kk2
@@ -265,3 +268,19 @@ class Grid3D(Grid1D):
         return (self.pxx*fu + self.pxy*fv + self.pxz*fw,
                 self.pxy*fu + self.pyy*fv + self.pyz*fw,
                 self.pxz*fu + self.pyz*fv + self.pzz*fw)
+
+    def iso_random(self, kd, ku, key):
+        '''Generate an isotropic random field'''
+        key, subkey = split_key(key)
+
+        phases = 2.0*xnp.pi*random_uniform(subkey,
+                                           shape=(self.Nx, self.Ny, self.Nz//2 + 1))
+        phases = xnp.exp(1.0j*phases) * 1/self.kk2
+        field = phases * (self.k2 > kd**2) * (self.k2 < ku**2)
+
+        conjg = field[:,:self.Ny//2,0].conjugate()
+        field = index_update(field,
+                             (slice(None), slice(-1, -self.Ny//2-1, -1), 0),
+                              conjg[::-1,:])
+
+        return field, key

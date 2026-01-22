@@ -53,3 +53,27 @@ else:
 
     def copy_arr(arr):
         return xnp.copy(arr)
+
+# --- 3. Random Numbers (Stateless Pattern) ---
+if JAX_ENABLED:
+    from jax import random
+    def get_key(seed=0):
+        return random.PRNGKey(seed)
+
+    def split_key(key, num=2):
+        return random.split(key, num)
+
+    def random_uniform(key, shape=None, minval=0.0, maxval=1.0):
+        if shape is None: shape = ()
+        return random.uniform(key, shape, minval=minval, maxval=maxval)
+else:
+    def get_key(seed=0):
+        xnp.random.seed(seed)
+        return None
+
+    def split_key(key, num=2):
+        return [None] * num
+
+    def random_uniform(key, shape=None, minval=0.0, maxval=1.0):
+        # Ignores key, uses global NumPy state
+        return xnp.random.uniform(minval, maxval, size=shape)

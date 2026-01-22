@@ -2,6 +2,7 @@
 
 import numpy as np
 from .._backend import xnp, index_update, apply_jit
+from .._backend import get_key
 import os
 
 from .pseudospectral import PseudoSpectral
@@ -24,22 +25,29 @@ class NSE3D(PseudoSpectral):
     def __init__(self,
                  grid: ps.Grid3D,
                  nu=1.0,
-                 kf=4,
+                 kd=2,
+                 ku=3,
                  f0=1.,
                  rkord=2,
-                 ext=4):
+                 ext=4,
+                 seed=42):
         super().__init__(grid, rkord=rkord)
         self.solver = 'NSE3D'
         self.ext = ext
 
+        # Generate rng key
+        self.key = get_key(seed)        
+
         # Forcing
-        self.kf = kf
-        self.f0 = f0
-        self.fx = f0*xnp.sin(2*np.pi*kf*self.grid.yy/self.grid.Ly)
-        self.fx = self.grid.forward(self.fx)
-        self.fy = xnp.zeros_like(self.fx, dtype=complex)
-        self.fz = xnp.zeros_like(self.fx, dtype=complex)
+        self.fx, self.key = grid.iso_random(kd, ku, self.key)
+        self.fy, self.key = grid.iso_random(kd, ku, self.key)
+        self.fz, self.key = grid.iso_random(kd, ku, self.key)
         self.fx, self.fy, self.fz = self.grid.inc_proj([self.fx, self.fy, self.fz])
+
+        amp = xnp.sqrt(2.0*self.grid.energy([self.fx, self.fy, self.fz]))
+        self.fx = (f0/amp) * self.fx
+        self.fy = (f0/amp) * self.fy
+        self.fz = (f0/amp) * self.fz
 
     @apply_jit
     def rkstep(self, fields, prev, oo, dt):
