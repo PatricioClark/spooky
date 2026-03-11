@@ -81,6 +81,33 @@ class DynSys():
         fields = self.unflatten(U)
         return self.solver.write_fields(fields, idx, path)
 
+    def phase_shifted_b(self, fields):
+        """Generate b vector by modifying phases in Fourier space."""
+        def apply_phase_shift(U):
+            """Applies a random phase shift to a single field U and projects to solenoidal modes."""
+            U_hat = self.grid.forward(U)
+            random_phases = np.exp(1j * np.random.uniform(0, 2*np.pi, U_hat.shape))
+            U_hat_shifted = np.abs(U_hat) * random_phases  # Preserve magnitudes
+            return U_hat_shifted
+
+        # Separate into u and v components
+        u, v = fields
+        b_vector = []
+
+        u_hat_shifted = apply_phase_shift(u)
+        v_hat_shifted = apply_phase_shift(v)
+
+        # Project in Fourier space
+        u_proj_hat, v_proj_hat = self.grid.inc_proj((u_hat_shifted, v_hat_shifted))
+
+        # Inverse FFT to physical space
+        u_proj = self.grid.inverse(u_proj_hat)
+        v_proj = self.grid.inverse(v_proj_hat)
+        fields_proj = [u_proj, v_proj]
+
+        b_vector = self.flatten([f.flatten() for f in fields_proj])
+        return b_vector
+
     def floquet_multipliers(self, fields, T, n, tol, ep0=1e-7, sx=None, b='U', test=False):
         ''' Calculates Floquet multipliers using the Arnoldi algorithm.
         Method follows Viswanath (2007), same as Newton method.
@@ -164,7 +191,8 @@ class DynSys():
 
         return eigval_H, eigvec_H, Q
 
-    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random', return_hist=False):
+    def lyapunov_exponents(self, fields, T, n, nsteps, ep0=1e-7, sx=None, b='random', return_hist=False,
+         start_step=0, U0=None, Q0=None, le_sum0=None, checkpoint_file=None, checkpoint_every=None):
         ''' Computes Lyapunov exponents and Kaplan–Yorke dimension via QR iteration.
 
         This method implements the Benettin algorithm for estimating finite-time
@@ -181,8 +209,6 @@ class DynSys():
             Number of Lyapunov exponents to compute.
         nsteps : int
             Number of reorthonormalization intervals (total time = nsteps * T)
-        tol : float, optional
-            QR tolerance. Default is 1e-10.
         ep0 : float, optional
             Perturbation scaling for the finite-difference tangent map.
             Default is 1e-7.
@@ -192,6 +218,14 @@ class DynSys():
             Initial perturbation seed ('random', 'U', 'phases', or user-defined array).
         return_hist : bool, optional
             If True, also returns the history of Lyapunov exponents at each step.
+        start_step : int, optional
+            Step number to start from (for restarts). Default is 0.
+        U0 : np.ndarray, optional
+            Initial state vector (flattened). If None, it will be initialized from fields.
+        Q0 : np.ndarray, shape (len(U), n), optional
+            Initial orthonormal basis for perturbations. If None, it will be initialized randomly.
+        le_sum0 : np.ndarray, shape (n,), optional
+            Initial cumulative sum of log norms. If None, it will be initialized to zeros.
 
         Returns
         -------
@@ -203,10 +237,22 @@ class DynSys():
             History of Lyapunov exponents at each reorthonormalization step.
         '''
 
-        U = self.flatten(fields)
+        # --------------------------------------------------
+        # --- INITIAL STATE OR RESTART ---------------------
+        # --------------------------------------------------
+
+        if U0 is not None:
+            U = U0.copy()
+        else:
+            U = self.flatten(fields)
+
+        if le_sum0 is not None:
+            le_sum = le_sum0.copy()
+        else:
+            le_sum = np.zeros(n)
 
         def apply_J(U, dU, Uevol):
-            ''' Applies the finite-time tangent map DΦ_T(U) to perturbation dU. '''
+            "Applies the finite-time tangent map DΦ_T(U) to perturbation dU using finite differences."
             epsilon = ep0 * np.linalg.norm(U) / np.linalg.norm(dU)
             U_pert = U + epsilon * dU
             dUT_dU = self.evolve(U_pert, T) - Uevol
@@ -214,64 +260,94 @@ class DynSys():
                 dUT_dU = self.translate(dUT_dU, sx)
             return dUT_dU / epsilon
 
-        # --- Initialize orthonormal basis Q ---
-        if isinstance(b, str):
-            if b == 'U':
-                b = U.copy()
-            elif b == 'random':
-                b = np.random.randn(len(U))
-            elif b == 'phases':
-                b = self.phase_shifted_b(fields)
-        elif not isinstance(b, np.ndarray):
-            raise ValueError("b must be 'U', 'random', 'phases', or a NumPy array.")
+        # --------------------------------------------------
+        # --- Initialize or Restore Q ----------------------
+        # --------------------------------------------------
 
-        Q = np.zeros((len(U), n))
-        Q[:, 0] = b / np.linalg.norm(b)
-        for i in range(1, n):
-            q = np.random.randn(len(U))
-            for j in range(i):
-                q -= np.dot(Q[:, j], q) * Q[:, j]
-            Q[:, i] = q / np.linalg.norm(q)
+        if Q0 is not None:
+            Q = Q0.copy()
+        else:
+            if isinstance(b, str):
+                if b == 'U':
+                    b = U.copy()
+                elif b == 'random':
+                    b = np.random.randn(len(U))
+                elif b == 'phases':
+                    b = self.phase_shifted_b(fields)
+            elif not isinstance(b, np.ndarray):
+                raise ValueError("b must be 'U', 'random', 'phases', or ndarray.")
 
-        # --- Accumulate finite-time Lyapunov exponents ---
-        le_sum = np.zeros(n)
-        le_hist = np.zeros((nsteps, n))  # le vs time
+            Q = np.zeros((len(U), n))
+            Q[:, 0] = b / np.linalg.norm(b)
+            for i in range(1, n):
+                q = np.random.randn(len(U))
+                for j in range(i):
+                    q -= np.dot(Q[:, j], q) * Q[:, j]
+                Q[:, i] = q / np.linalg.norm(q)
 
-        for step in range(nsteps):
-            # Propagate basis vectors through tangent map
+        # --------------------------------------------------
+        # --- History --------------------------------------
+        # --------------------------------------------------
+
+        if return_hist:
+            le_hist = np.zeros((nsteps, n))
+
+        # --------------------------------------------------
+        # --- MAIN LOOP ------------------------------------
+        # --------------------------------------------------
+
+        for step in range(start_step, nsteps):
+
             V = np.zeros_like(Q)
             Uevol = self.evolve(U, T)
+
             for i in range(n):
                 V[:, i] = apply_J(U, Q[:, i], Uevol)
 
-            # QR reorthonormalization
             Q, R = np.linalg.qr(V)
+
             diagR = np.abs(np.diag(R))
-            le_sum += np.log(diagR + 1e-300)  # prevent log(0)
+            le_sum += np.log(diagR + 1e-300)
 
-            # Store running average of Lyapunov exponents 
             t = (step + 1) * T
-            le_running = le_sum / t
-            le_running = np.sort(le_running)[::-1] # sort in descending order
-            le_hist[step, :] = le_running
 
-            # Re-normalize columns to avoid drift
-            for i in range(n):
-                Q[:, i] /= np.linalg.norm(Q[:, i])
+            if return_hist:
+                le_hist[step, :] = le_sum / t
 
             U = np.copy(Uevol)
 
-        # --- Average over total time ---
+            # If using forcing update seed
+            if hasattr(self.solver, 'seed'):
+                self.solver.seed += 1 
+
+            # --------------------------------------------------
+            # --- CHECKPOINT SAVE -----------------------------
+            # --------------------------------------------------
+
+            if checkpoint_file is not None and checkpoint_every is not None:
+                if (step + 1) % checkpoint_every == 0:
+                    np.savez(
+                        checkpoint_file,
+                        step=step + 1,
+                        U=U,
+                        Q=Q,
+                        le_sum=le_sum,
+                        le_hist=le_hist if return_hist else None
+                    )
+
+        # --------------------------------------------------
+        # --- FINAL RESULTS --------------------------------
+        # --------------------------------------------------
+
         lyap_exponents = le_sum / (nsteps * T)
         lyap_exponents = np.sort(lyap_exponents)[::-1]
 
-        # --- Kaplan–Yorke dimension ---
         S = np.cumsum(lyap_exponents)
         positive = np.where(S >= 0)[0]
         if len(positive) > 0:
             j = positive[-1]
             if j + 1 < len(S):
-                D_KY = j + S[j] / abs(lyap_exponents[j + 1])
+                D_KY = (j + 1) + S[j] / abs(lyap_exponents[j + 1])
             else:
                 D_KY = float(j)
         else:
@@ -280,7 +356,11 @@ class DynSys():
         if not return_hist:
             return lyap_exponents, D_KY
 
+        sort_idx = np.argsort(le_hist[-1])[::-1]
+        le_hist = le_hist[:, sort_idx]
+
         return lyap_exponents, D_KY, le_hist
+
 
 class UPONewtonSolver(DynSys):
     """
@@ -292,7 +372,14 @@ class UPONewtonSolver(DynSys):
       - Chandler & Kerswell (2013)
       - Viswanath (2007)
     """
-    def __init__(self, solver, T, sx, sp, lda):
+    def __init__(self,
+                solver: ps.Solver,
+                T: float | None,
+                sx: float | None,
+                lda: float | None = None,
+                sp: bool = False
+                ):
+
         super().__init__(self, solver)
 
     def form_X(self, U, T=None, sx=None, lda = None):
@@ -406,7 +493,6 @@ class UPONewtonSolver(DynSys):
             ''' Applies A (extended Jacobian) to vector X^t  '''
             dU, dT, ds = self.unpack_X(dX)
 
-            print(self.norm(U), type(self.pm.eps0), self.norm(dU))
             epsilon = self.pm.eps0*self.norm(U)/self.norm(dU)
 
             # Perturb U by epsilon*dU and apply solenoidal projection if sp1 = True
@@ -680,34 +766,6 @@ class UPONewtonSolver(DynSys):
             return
 
         print(f"{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}", file=open(path, "a"))
-
-    def phase_shifted_b(self, fields):
-        """Generate b vector by modifying phases in Fourier space."""
-        def apply_phase_shift(U):
-            """Applies a random phase shift to a single field U and projects to solenoidal modes."""
-            U_hat = self.grid.forward(U)
-            random_phases = np.exp(1j * np.random.uniform(0, 2*np.pi, U_hat.shape))
-            U_hat_shifted = np.abs(U_hat) * random_phases  # Preserve magnitudes
-            return U_hat_shifted
-
-        # Separate into u and v components
-        u, v = fields
-        b_vector = []
-
-        u_hat_shifted = apply_phase_shift(u)
-        v_hat_shifted = apply_phase_shift(v)
-
-        # Project in Fourier space
-        u_proj_hat, v_proj_hat = self.grid.inc_proj((u_hat_shifted, v_hat_shifted))
-
-        # Inverse FFT to physical space
-        u_proj = self.grid.inverse(u_proj_hat)
-        v_proj = self.grid.inverse(v_proj_hat)
-        fields_proj = [u_proj, v_proj]
-
-        b_vector = self.flatten([f.flatten() for f in fields_proj])
-        return b_vector
-
 
     def run_arclength(self, X0, X1, X_restart = None, iA:int|None = None):
         '''Iterates Newton-GMRes solver until convergence using arclength continuation
