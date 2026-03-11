@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 import spooky as sp
-from spooky._backend import index_update
+from spooky._backend import index_update, xnp
 
 
 # ── Grid1D ───────────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ class TestGrid1D:
 
     def test_dealias_zeros_high_modes(self, g):
         """Applying dealias_modes zeros all modes above the 2/3 threshold."""
-        fu = np.ones(g.Nx // 2 + 1, dtype=complex)
+        fu = xnp.ones(g.Nx // 2 + 1, dtype=complex)
         fu_d = index_update(fu, g.dealias_modes, 0.0)
         assert np.all(fu_d[g.dealias_modes] == 0.0), "High modes not zeroed"
         assert np.all(fu_d[~g.dealias_modes] == 1.0), "Low modes incorrectly modified"
@@ -142,7 +142,7 @@ class TestGrid2D:
         """Applying dealias_modes on a 2D spectral array zeros all flagged modes."""
         rng = np.random.default_rng(0)
         shape = (g.Nx, g.Ny // 2 + 1)
-        fu = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+        fu = xnp.array(rng.standard_normal(shape) + 1j * rng.standard_normal(shape))
         fu_d = index_update(fu, g.dealias_modes, 0.0)
         assert np.all(fu_d[g.dealias_modes] == 0.0), "High modes not zeroed"
 
