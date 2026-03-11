@@ -7,6 +7,14 @@ Collection of algorithms and tools based on pseudospectral methods for fluid flo
 - DynSys: 
     - UPOs: calculates unstable periodic orbits using a Newton shooting method.
     - Floquet/Lyapunov analysis: calculate exponents.
+
+If Jax is installed, the backend can be changed by setting the environment
+variable
+$ export NUMPY_BACKEND='jax'
+
+By default, JAX uses float, this can be changed by doing
+$ export JAX_ENABLE_X64 = 1
+This is mandatory for DynSys routines, but makes running in GPUs painfully slow
     
 
 ### Installation
