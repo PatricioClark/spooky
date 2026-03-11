@@ -101,9 +101,9 @@ class NSE3D(PseudoSpectral):
         fv = index_update(fv, self.grid.zero_mode, 0.0)
         fw = index_update(fw, self.grid.zero_mode, 0.0)
 
-        fu = index_update(fu, self.grid.dealias_mode, 0.0)
-        fv = index_update(fv, self.grid.dealias_mode, 0.0)
-        fw = index_update(fw, self.grid.dealias_mode, 0.0)
+        fu = index_update(fu, self.grid.dealias_modes, 0.0)
+        fv = index_update(fv, self.grid.dealias_modes, 0.0)
+        fw = index_update(fw, self.grid.dealias_modes, 0.0)
 
         return [fu, fv, fw]
 

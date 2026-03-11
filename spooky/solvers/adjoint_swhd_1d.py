@@ -23,6 +23,7 @@ class Adjoint_SWHD_1D(PseudoSpectral):
     dim_fields = 1
     def __init__(self, grid, pm, swhd_instance, rkord=2):
         super().__init__(grid, rkord)
+        self.pm = pm
         self.swhd = swhd_instance
         self.inverse_u = pm.inverse_u
         self.inverse_u0 = pm.inverse_u0
