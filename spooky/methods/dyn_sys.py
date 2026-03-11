@@ -42,7 +42,7 @@ class DynSys():
             fields = [f.reshape(self.grid.shape) for f in fields]
             return fields
         else:
-            trim_shape = (self.Nx, self.Nz-2)
+            trim_shape = (self.grid.Nx, self.grid.Nz-2)
             trim_fields = [f.reshape(trim_shape) for f in fields]
             fields = [np.pad(f, pad_width = ((0,0),(1,1))) for f in trim_fields] #pads second dimension with zeros before and after
             return fields
@@ -164,7 +164,7 @@ class DynSys():
 
         return eigval_H, eigvec_H, Q
 
-    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random'):
+    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random', return_hist=False):
         ''' Computes Lyapunov exponents and Kaplan–Yorke dimension via QR iteration.
 
         This method implements the Benettin algorithm for estimating finite-time
@@ -190,6 +190,8 @@ class DynSys():
             Translation in x direction (for translationally invariant systems).
         b : str or np.ndarray, optional
             Initial perturbation seed ('random', 'U', 'phases', or user-defined array).
+        return_hist : bool, optional
+            If True, also returns the history of Lyapunov exponents at each step.
 
         Returns
         -------
@@ -197,6 +199,8 @@ class DynSys():
             Sorted Lyapunov exponents in descending order.
         D_KY : float
             Kaplan–Yorke dimension computed from the cumulative sum of exponents.
+        le_hist : np.ndarray, shape (nsteps, n), optional
+            History of Lyapunov exponents at each reorthonormalization step.
         '''
 
         U = self.flatten(fields)
@@ -231,6 +235,8 @@ class DynSys():
 
         # --- Accumulate finite-time Lyapunov exponents ---
         le_sum = np.zeros(n)
+        le_hist = np.zeros((nsteps, n))  # le vs time
+
         for step in range(nsteps):
             # Propagate basis vectors through tangent map
             V = np.zeros_like(Q)
@@ -242,6 +248,12 @@ class DynSys():
             Q, R = np.linalg.qr(V)
             diagR = np.abs(np.diag(R))
             le_sum += np.log(diagR + 1e-300)  # prevent log(0)
+
+            # Store running average of Lyapunov exponents 
+            t = (step + 1) * T
+            le_running = le_sum / t
+            le_running = np.sort(le_running)[::-1] # sort in descending order
+            le_hist[step, :] = le_running
 
             # Re-normalize columns to avoid drift
             for i in range(n):
@@ -265,7 +277,10 @@ class DynSys():
         else:
             D_KY = 0.0
 
-        return lyap_exponents, D_KY
+        if not return_hist:
+            return lyap_exponents, D_KY
+
+        return lyap_exponents, D_KY, le_hist
 
 class UPONewtonSolver(DynSys):
     """
@@ -298,7 +313,7 @@ class UPONewtonSolver(DynSys):
 
         # Determine size of U
         if getattr(self.pm, 'remove_boundary', False):
-            dim_U = self.pm.Nx * (self.pm.Nz-2) * self.solver.num_fields
+            dim_U = self.grid.Nx * (self.grid.Nz-2) * self.solver.num_fields
         else:
             dim_U = self.grid.N * self.solver.num_fields
 
