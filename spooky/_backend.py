@@ -11,6 +11,7 @@ if BACKEND == 'jax':
         JAX_ENABLED = True
     except ImportError:
         print("JAX requested but not installed. Falling back to NumPy.")
+        JAX_ENABLED = False
 elif BACKEND == 'numpy':
     import numpy as xnp
     print("Using NumPy backend.")
