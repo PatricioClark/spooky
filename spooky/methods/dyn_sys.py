@@ -361,87 +361,113 @@ class DynSys():
 
         return lyap_exponents, D_KY, le_hist
 
-
 class UPONewtonSolver(DynSys):
     """
-    Implements the Newton-Krylov method for computing steady states and
-    periodic orbits in PDE systems (e.g. Kolmogorov flow, Boussinesq
-                                    equations).
-
-    References:
-      - Chandler & Kerswell (2013)
-      - Viswanath (2007)
+    Implements the standard Newton-Krylov method for computing steady states and
+    periodic orbits in PDE systems.
     """
     def __init__(self,
-                solver: ps.Solver,
-                T: float | None,
-                sx: float | None,
-                lda: float | None = None,
-                sp: bool = False
-                ):
+                 solver,
+                 T: float | None,
+                 sx: float | None,
+                 Tconst: float = 1.0,
+                 eps0: float = 1e-7,
+                 sp1: bool = False,
+                 sp2: bool = False,
+                 sp_dU: bool = False,
+                 save_outputs: str = 'none',
+                 save_balance: str = 'none',
+                 restart_iN: int = 0,
+                 N_newt: int = 200,
+                 N_gmres: int = 300,
+                 tol_gmres: float = 1e-3,
+                 N_hook: int = 25,
+                 c: float = 0.5,
+                 reduc_reg: float = 0.5,
+                 mu0: float = 1e-3,
+                 mu_inc: float = 2.0,
+                 tol_nudge: float = 1e-3,
+                 frac_nudge: float = 0.,
+                 tol_newt: float = 1e-5,
+                 tol_improve: float = 1e-3,
+                 newton_dir: str = 'newton',
+                 gmres_dir: str = 'gmres',
+                 apply_A_dir: str = 'apply_A',
+                 hookstep_dir: str = 'hookstep',
+                 trust_region_dir: str = 'trust_region',
+                 converged_dir: str = 'converged'
+                 ):
 
-        super().__init__(self, solver)
+        super().__init__(solver)
+        
+        # System parameters
+        self.T = T
+        self.sx = sx
+        self.Tconst = Tconst
+        self.eps0 = eps0
+        
+        # Projections and outputs
+        self.sp1 = sp1
+        self.sp2 = sp2
+        self.sp_dU = sp_dU
+        self.save_outputs = save_outputs
+        self.save_balance = save_balance
+        
+        # Solver hyperparameters
+        self.restart_iN = restart_iN
+        self.N_newt = N_newt
+        self.N_gmres = N_gmres
+        self.tol_gmres = tol_gmres
+        self.N_hook = N_hook
+        self.c = c
+        self.reduc_reg = reduc_reg
+        self.mu0 = mu0
+        self.mu_inc = mu_inc
+        self.tol_nudge = tol_nudge
+        self.frac_nudge = frac_nudge
+        self.tol_newt = tol_newt
+        self.tol_improve = tol_improve
+        
+        # Directories
+        self.newton_dir = newton_dir
+        self.gmres_dir = gmres_dir
+        self.apply_A_dir = apply_A_dir
+        self.hookstep_dir = hookstep_dir
+        self.trust_region_dir = trust_region_dir
+        self.converged_dir = converged_dir
 
-    def form_X(self, U, T=None, sx=None, lda = None):
-        ''' Form X vector from fields U, T, sx and lda (if applicable) '''
+    def form_X(self, U, T, sx):
         X = np.copy(U)
-        if self.pm.T is not None:
+        if self.T is not None:
             X = np.append(X, T)
-        if self.pm.sx is not None:
+        if self.sx is not None:
             X = np.append(X, sx)
-        if lda is not None:
-            X = np.append(X, lda)
         return X
 
     def unpack_X(self, X):
-        '''X could contain extra params sx and lda if searching for RPOs (pm.sx
-                                                                          != 0)
-        or using arclength continuation'''
-
-        # Determine size of U
-        if getattr(self.pm, 'remove_boundary', False):
-            dim_U = self.grid.Nx * (self.grid.Nz-2) * self.solver.num_fields
-        else:
+        if not self.remove_boundary:
             dim_U = self.grid.N * self.solver.num_fields
+        else:
+            # Remove boundaries in z for Krylov
+            dim_U = self.grid.Nx * (self.grid.Nz-2) * self.solver.num_fields
 
-        # Extract U, T, sx, lda from X
         U = X[:dim_U]
         idx = dim_U
 
-        if self.pm.T is not None:
-            T = X[idx] # T saved as first argument after U
+        if self.T is not None:
+            T = X[idx]
             idx += 1
         else:
-            T = self.pm.Tconst # if searching for TW or equilibrium T must be fixed at a small but not too small value
+            T = self.Tconst
 
-        sx = X[idx] if (self.pm.sx is not None) else 0.
-
-        if not self.pm.arclength:
-            return U, T, sx
-        else:
-            lda = X[-1]
-            return U, T, sx, lda
-
-    def get_restart_values(self, restart, iA: int | None = None):
-        """Get values from last Newton iteration of T and sx from newton.txt"""
-        path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
-
-        # Load data and find restart iteration
-        iters, T, sx = np.loadtxt(path, delimiter=',', skiprows=1, unpack=True, usecols=(0, 2, 3))
-        idx_restart = np.argwhere(iters == restart)[0][0]
-
-        values = [T[idx_restart], sx[idx_restart]]
-        if self.pm.arclength:
-            lda = np.loadtxt(path, delimiter=',', skiprows=1, unpack=True, usecols=5)
-            values.append(lda[idx_restart])
-        return values
+        sx = X[idx] if (self.sx is not None) else 0.
+        return U, T, sx
 
     def form_b(self, U, UT):
-        "Form RHS of extended Newton system. UT is evolved and translated flattened field"
         b = U - UT
-        if self.pm.sx is not None:
+        if self.sx is not None:
             b = np.append(b, 0.)
-        if self.pm.T is not None:
+        if self.T is not None:
             b = np.append(b, 0.)
         return b
 
@@ -449,240 +475,143 @@ class UPONewtonSolver(DynSys):
         return np.linalg.norm(U)
 
     def apply_proj(self, U, dU, sp):
-        '''Applies projection if sp is True. To dU or U+dU'''
         if not sp:
             return U+dU
-
-        if self.pm.sp_dU:
+        if self.sp_dU:
             dU = self.sol_project(dU)
             return U+dU
         else:
             return self.sol_project(U+dU)
 
     def update_A(self, X, iN):
-        '''Creates (extended) Jacobian matrix to be applied to U throughout GMRes'''
-        # Compute variables and derivatives used throughout gmres iterations
         U, T, sx = self.unpack_X(X)
-
-        # Evolve fields and save output
-        save_out = True if self.pm.save_outputs == 'all' else False
-        save_bal = True if self.pm.save_balance == 'all' else False
+        save_out = True if self.save_outputs == 'all' else False
+        save_bal = True if self.save_balance == 'all' else False
         UT = self.evolve(U, T, save_out, save_bal, iN=iN-1)
 
-        # Translate UT by sx and calculate derivatives
-        if self.pm.sx is not None:
+        if self.sx is not None:
             UT = self.translate(UT, sx)
-
             dUT_ds = self.deriv_U(UT, self.grid.kx)
             dU_ds = self.deriv_U(U, self.grid.kx)
         else:
-            dUT_ds = dU_ds = np.zeros_like(U) # No translation if sx is None
+            dUT_ds = dU_ds = np.zeros_like(U)
 
-        # Calculate derivatives in time
-        if self.pm.T is not None:
-            dUT_dT = self.evolve(UT, self.solver.pm.dt)
-            dUT_dT = (dUT_dT - UT)/self.solver.pm.dt
-
-            dU_dt = self.evolve(U, self.solver.pm.dt)
-            dU_dt = (dU_dt - U)/self.solver.pm.dt
+        if self.T is not None:
+            dUT_dT = self.evolve(UT, self.grid.dt)
+            dUT_dT = (dUT_dT - UT)/self.grid.dt
+            dU_dt = self.evolve(U, self.grid.dt)
+            dU_dt = (dU_dt - U)/self.grid.dt
         else:
-            dUT_dT = dU_dt = np.zeros_like(U) # No evol if T is None
-
+            dUT_dT = dU_dt = np.zeros_like(U)
 
         def apply_A(dX):
-            ''' Applies A (extended Jacobian) to vector X^t  '''
             dU, dT, ds = self.unpack_X(dX)
+            epsilon = self.eps0*self.norm(U)/self.norm(dU)
+            U_pert = self.apply_proj(U, epsilon*dU, self.sp1)
 
-            epsilon = self.pm.eps0*self.norm(U)/self.norm(dU)
-
-            # Perturb U by epsilon*dU and apply solenoidal projection if sp1 = True
-            U_pert = self.apply_proj(U, epsilon*dU, self.pm.sp1)
-
-            # Calculate derivative w.r.t. initial fields
             dUT_dU = self.evolve(U_pert, T)
-            if self.pm.sx is not None:
-                dUT_dU = self.translate(dUT_dU,sx)
+            if self.sx is not None:
+                dUT_dU = self.translate(dUT_dU, sx)
             dUT_dU = (dUT_dU - UT)/epsilon
 
-            # Calculate projections of dU needed for extended Newton system
             Tx_proj = np.dot(dU_ds.conj(), dU).real
             t_proj = np.dot(dU_dt.conj(), dU).real
-
-            # Save norms for diagnostics
             norms = [self.norm(U_) for U_ in [U, dU, dUT_dU, dU_dt, dUT_dT, dU_ds, dUT_ds]]
 
             self.write_apply_A(iN, norms, t_proj, Tx_proj)
 
-            # LHS of extended Newton system
             LHS = dUT_dU - dU + dUT_ds*ds + dUT_dT*dT
-            if self.pm.T is not None:
+            if self.T is not None:
                 LHS = np.append(LHS, t_proj)
-            if self.pm.sx is not None:
+            if self.sx is not None:
                 LHS = np.append(LHS, Tx_proj)
-
             return LHS
 
         return apply_A, UT
 
     def run_newton(self, X):
-        '''Iterates Newton-GMRes solver until convergence'''
-        pm = self.pm
-        if self.pm.restart_iN == 0:
+        if self.restart_iN == 0:
             self.write_header_newton()
 
-        for iN in range(pm.restart_iN+1, pm.N_newt):
-            # Unpack X
+        for iN in range(self.restart_iN+1, self.N_newt):
             U, T, sx = self.unpack_X(X)
-
-            # Calculate A matrix for newton iteration
             apply_A, UT = self.update_A(X, iN)
-
-            # RHS of Newton extended system
             b = self.form_b(U, UT)
-            F = self.norm(b) #||b|| = ||F||: rootsearch function
+            F = self.norm(b)
 
-            # Write to txts
             self.write_newton(iN, F, U, sx, T)
             self.write_headers(iN)
 
-            # Perform GMRes iteration
-            # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, pm.N_gmres, pm.tol_gmres, pm.gmres_dir, iN)
-
-            # Perform hookstep to adjust solution to trust region
+            H, beta, Q = GMRES(apply_A, b, self.N_gmres, self.tol_gmres, self.gmres_dir, iN)
             X, F_new, UT = self.hookstep(X, H, beta, Q, iN)
-
-            # Update solution
             U, T, sx = self.unpack_X(X)
 
-            # Select different initial condition from orbit if solution is not converging
-            if ((F-F_new)/F) < pm.tol_nudge:
-                U = self.evolve(U, T*self.pm.frac_nudge)
+            if ((F-F_new)/F) < self.tol_nudge:
+                U = self.evolve(U, T*self.frac_nudge)
 
-            # Termination condition
-            if (F_new < pm.tol_newt) and ((F-F_new)/F < pm.tol_improve):
-
-                # Final evolve to save outputs and balance
-                save_out = True if self.pm.save_outputs in ('all', 'last') else False
-                save_bal = True if self.pm.save_balance in ('all', 'last') else False
+            if (F_new < self.tol_newt) and ((F-F_new)/F < self.tol_improve):
+                save_out = True if self.save_outputs in ('all', 'last') else False
+                save_bal = True if self.save_balance in ('all', 'last') else False
                 UT = self.evolve(U, T, save_out, save_bal, iN=iN)
-
-                if pm.sx is not None:
+                if self.sx is not None:
                     UT = self.translate(UT, sx)
                 b = self.form_b(U, UT)
-                F = self.norm(b) #||b|| = ||F||: rootsearch function
-                # Write to txts
+                F = self.norm(b)
                 self.write_newton(iN+1, F, U, sx, T)
                 break
 
-
-    def hookstep(self, X, H, beta, Q, iN, arclength:dict|None = None):
-        ''' Performs hookstep on solution given by GMRes untill new |F| is less than previous |F| (or max iter of hookstep is reached) '''
-        ''' If performing arclength continuation arclength contains a dict with the relevant quantities '''
-        # Unpack X
-        if not arclength:
-            U, T, sx = self.unpack_X(X)
-        else:
-            U, T, sx, lda = self.unpack_X(X, arclength = True)
-
-        #Initial solution from GMRes in basis Q
+    def hookstep(self, X, H, beta, Q, iN):
+        U, T, sx = self.unpack_X(X)
         y = backsub(H, beta)
-        #Initial trust region radius
         Delta = self.norm(y)
-
-        #Define trust_region function
-        if not arclength:
-            trust_region = self.trust_region_function(H, beta, iN, y)
-        else:
-            trust_region = self.trust_region_function(H, beta, iN, y, arclength["iA"])
+        trust_region = self.trust_region_function(H, beta, iN, y)
 
         mu = 0.
-        #Perform hookstep
-        for iH in range(self.pm.N_hook):
+        for iH in range(self.N_hook):
             y, mu = trust_region(Delta, mu)
-            dx = Q@y #Unitary transform back to full dimension
+            dx = Q@y
+            dU, dT, dsx = self.unpack_X(dx)
 
-            if not arclength:
-                dU, dT, dsx = self.unpack_X(dx)
-            else:
-                dU, dT, dsx, dlda = self.unpack_X(dx, arclength = True)
-
-            U_new = self.apply_proj(U, dU, self.pm.sp2)
-
-            if self.pm.sx is not None:
-                sx_new = sx+dsx.real
-            else:
-                sx_new = 0.
-
-            if self.pm.T:
-                T_new = T+dT.real
-            else:
-                T_new = self.pm.Tconst
-
+            U_new = self.apply_proj(U, dU, self.sp2)
+            sx_new = sx + dsx.real if self.sx is not None else 0.
+            T_new = T + dT.real if self.T else self.Tconst
             X_new = self.form_X(U_new, T_new, sx_new)
 
-            if arclength:
-                lda_new = lda+dlda.real
-                X_new = np.append(X_new, lda_new)
-                self.update_lda(lda_new)
-
             UT = self.evolve(U_new, T_new)
-            if self.pm.sx is not None:
-                UT = self.translate(UT,sx_new)
+            if self.sx is not None:
+                UT = self.translate(UT, sx_new)
 
             b = self.form_b(U_new, UT)
-            if arclength:
-                # add arclength term
-                N = self.N_constraint(X_new, arclength["dX_dr"], arclength["dr"], arclength["X1"])
-                b = np.append(b, -N)
-
             F_new = self.norm(b)
-            lin_exp = self.norm(beta - self.pm.c * H @ y) #linear expansion of F around x (in basis Q).
-            # beta = H@y holds
+            lin_exp = self.norm(beta - self.c * H @ y)
 
-            if arclength:
-                self.write_hookstep(iN, iH, F_new, lin_exp, arclength["iA"])
-            else:
-                self.write_hookstep(iN, iH, F_new, lin_exp)
+            self.write_hookstep(iN, iH, F_new, lin_exp)
 
             if F_new <= lin_exp:
                 break
             else:
-                Delta *= self.pm.reduc_reg #reduce trust region
+                Delta *= self.reduc_reg
         return X_new, F_new, UT
 
-
-    def trust_region_function(self, H, beta, iN, y0, iA:int|None =None):
-        ''' Performs trust region on solution provided by GMRes. Must be instantiated at each Newton iteration '''
-        R = H #R part of QR decomposition
-        A_ = R.T @ R #A matrix in trust region
-        b = R.T @ beta #b vector in trust region
+    def trust_region_function(self, H, beta, iN, y0, iA: int | None = None):
+        R = H
+        A_ = R.T @ R
+        b = R.T @ beta
 
         def trust_region(Delta, mu):
-            ''' Delta: trust region radius, mu: penalty parameter  '''
-            if mu == 0: #First hoostep iteration. Doens't perform trust region
+            if mu == 0:
                 y_norm = self.norm(y0)
-                Delta0 = y_norm #Initial trust region
+                self.write_trust_region(iN, y_norm, mu, y0, A_, iA)
+                return y0, self.mu0
 
-                self.write_trust_region(iN, Delta0, mu, y0, A_, iA)
-
-                mu = self.pm.mu0 #Initialize first nonzero value of mu
-                return y0, mu
-
-            for _ in range(1, 1000): #1000 big enough to ensure that condition is satisfied
-
-                # Ridge regression adjustment
+            for _ in range(1, 1000):
                 A = A_ + mu * np.eye(A_.shape[0])
-                y = np.linalg.solve(A, b) #updates solution with trust region
-
+                y = np.linalg.solve(A, b)
                 self.write_trust_region(iN, Delta, mu, y, A, iA)
-
                 if self.norm(y) <= Delta:
                     break
                 else:
-                    # Increase mu until trust region is satisfied
-                    mu *= self.pm.mu_inc
-
+                    mu *= self.mu_inc
             return y, mu
         return trust_region
 
@@ -690,8 +619,6 @@ class UPONewtonSolver(DynSys):
         os.makedirs(path, exist_ok=True)
 
     def _get_path(self, base_dir: str | None, *parts, iA: int | None = None):
-        """Safely join base_dir with optional suffix and subpaths.
-        Adds iA (arclength iteration) suffix if provided."""
         if base_dir is None:
             return None
         if iA is not None:
@@ -699,267 +626,272 @@ class UPONewtonSolver(DynSys):
         os.makedirs(base_dir, exist_ok=True)
         return os.path.join(base_dir, *parts)
 
-    def write_header_newton(self, iA: int|None = None):
-        """Writes header to newton.txt file."""
-        path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
-        if path is None:
-            return
+    def write_header_newton(self, iA: int | None = None):
+        path = self._get_path(self.newton_dir, "newton.txt", iA=iA)
+        if path:
+            print("iN, |F|, T, sx, |U|", file=open(path, "a"))
 
-        header = "iN, |F|, T, sx, |U|"
-        if self.pm.arclength:
-            header += ", lambda, N(X)"
-        print(header, file=open(path, "a"))
-
-    def write_newton(self, iN, F, U, sx, T, arclength: tuple|None = None, iA: int|None = None):
-        """Writes iteration data to print file."""
-        newton_path = self._get_path(self.pm.newton_dir, "newton.txt", iA=iA)
-        if newton_path is None:
-            return
-
-        content = f"{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e}"
-        if arclength:
-            content += f",{arclength[0]},{arclength[1]}"
-        print(content, file=open(newton_path, "a"))
+    def write_newton(self, iN, F, U, sx, T, iA: int | None = None):
+        path = self._get_path(self.newton_dir, "newton.txt", iA=iA)
+        if path:
+            print(f"{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e}", file=open(path, "a"))
 
     def write_headers(self, iN, iA: int | None = None):
-        """Writes headers to diagnostic files for every Newton iteration iN."""
         suffix = f'iN{iN:02}.txt'
-        gmres_path = self._get_path(self.pm.gmres_dir, 'gmres_'+suffix, iA=iA)
-        apply_A_path = self._get_path(self.pm.apply_A_dir, 'apply_A_'+suffix, iA=iA)
-        hook_path = self._get_path(self.pm.hookstep_dir, 'hookstep_'+suffix, iA=iA)
-        trust_region_path = self._get_path(self.pm.trust_region_dir, 'trust_region_'+suffix, iA=iA)
+        gmres_path = self._get_path(self.gmres_dir, 'gmres_'+suffix, iA=iA)
+        apply_A_path = self._get_path(self.apply_A_dir, 'apply_A_'+suffix, iA=iA)
+        hook_path = self._get_path(self.hookstep_dir, 'hookstep_'+suffix, iA=iA)
+        trust_region_path = self._get_path(self.trust_region_dir, 'trust_region_'+suffix, iA=iA)
 
-        if gmres_path:
-            print('iG, error', file=open(gmres_path, "w"))
+        if gmres_path: print('iG, error', file=open(gmres_path, "w"))
+        if hook_path: print('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|', file=open(hook_path, "w"))
+        if apply_A_path: print("|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|, t_proj, Tx_proj", file=open(apply_A_path, "w"))
+        if trust_region_path: print("Delta, mu, |y|, cond(A)", file=open(trust_region_path, "w"))
 
-        if hook_path:
-            print('iH, |F|, |F(x)+cAdx|, |F(x)+Adx|', file=open(hook_path, "w"))
-
-        if apply_A_path:
-            lda = (", |dUT/dlda|", ", lda_proj") if self.pm.arclength else ("", "")
-            header = f"|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|{lda[0]}, t_proj, Tx_proj{lda[1]}"
-            print(header, file=open(apply_A_path, "w"))
-
-        if trust_region_path:
-            print("Delta, mu, |y|, cond(A)", file=open(trust_region_path, "w"))
-
-    def write_apply_A(self, iN, norms, t_proj, Tx_proj, lda_proj=None, iA: int | None = None):
-        path = self._get_path(self.pm.apply_A_dir, f"apply_A_iN{iN:02}.txt", iA=iA)
-        if path is None:
-            return
-
-        content = ",".join([f"{norm:.4e}" for norm in norms]) + f",{t_proj:.4e},{Tx_proj:.4e}"
-        if lda_proj:
-            content += f",{lda_proj:.4e}"
-        print(content, file=open(path, "a"))
+    def write_apply_A(self, iN, norms, t_proj, Tx_proj, iA: int | None = None):
+        path = self._get_path(self.apply_A_dir, f"apply_A_iN{iN:02}.txt", iA=iA)
+        if path:
+            content = ",".join([f"{norm:.4e}" for norm in norms]) + f",{t_proj:.4e},{Tx_proj:.4e}"
+            print(content, file=open(path, "a"))
 
     def write_hookstep(self, iN, iH, F_new, lin_exp, iA: int | None = None):
-        path = self._get_path(self.pm.hookstep_dir, f"hookstep_iN{iN:02}.txt", iA=iA)
-        if path is None:
-            return
-
-        print(f"{iH:02},{F_new:.4e},{lin_exp:.4e}", file=open(path, "a"))
+        path = self._get_path(self.hookstep_dir, f"hookstep_iN{iN:02}.txt", iA=iA)
+        if path:
+            print(f"{iH:02},{F_new:.4e},{lin_exp:.4e}", file=open(path, "a"))
 
     def write_trust_region(self, iN, Delta, mu, y, A, iA: int | None = None):
-        path = self._get_path(self.pm.trust_region_dir, f"trust_region_iN{iN:02}.txt", iA=iA)
-        if path is None:
-            return
+        path = self._get_path(self.trust_region_dir, f"trust_region_iN{iN:02}.txt", iA=iA)
+        if path:
+            print(f"{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}", file=open(path, "a"))
 
-        print(f"{Delta:.4e},{mu:.4e},{self.norm(y):.4e},{np.linalg.cond(A):.3e}", file=open(path, "a"))
+class ArclengthNewtonSolver(UPONewtonSolver):
+    """
+    Extends the UPONewtonSolver to perform arclength continuation following
+    Chandler & Kerswell (2013).
+    """
+    def __init__(self,
+                 solver,
+                 lda: float,
+                 alpha: float = 1.0,
+                 norm_val: float = 1.0,
+                 restart_iA: int = 0,
+                 N_arc: int = 10,
+                 **kwargs):
+        
+        # Initialize the base UPONewtonSolver with all other kwargs
+        super().__init__(solver, **kwargs)
+        
+        self.lda = lda
+        self.alpha = alpha
+        self.norm_val = norm_val
+        self.restart_iA = restart_iA
+        self.N_arc = N_arc
 
-    def run_arclength(self, X0, X1, X_restart = None, iA:int|None = None):
-        '''Iterates Newton-GMRes solver until convergence using arclength continuation
-        Follows convention of Chandler - Kerswell: Invariant recurrent solutions..
-        X: Vector containing (U, T, sx, lda) to be updated with Newton until it converges to periodic orbit
-        dX_dr: Derivative of X w.r.t. arclength
-        X1: Previous converged solution (X(r0) in Chandler-Kerswell
-        iA: arclength iteration in case automatic arclength is performed '''
+    def form_X(self, U, T=None, sx=None, lda=None):
+        X = super().form_X(U, T, sx)
+        if lda is not None:
+            X = np.append(X, lda)
+        return X
 
-        # Define relevant quantities for arclength continuation
-        dr = np.linalg.norm(X1 - X0)
-        dX_dr = (X1 - X0)/dr
+    def unpack_X(self, X):
+        U, T, sx = super().unpack_X(X)
+        lda = X[-1]
+        return U, T, sx, lda
 
-        if X_restart is not None: # in case Newton iteration is to be restarted
-            X = X_restart
-        else:
-            X = X1
+    def hookstep(self, X, H, beta, Q, iN, arclength: dict):
+        U, T, sx, lda = self.unpack_X(X)
+        y = backsub(H, beta)
+        Delta = self.norm(y)
 
-        start_iN = self.pm.restart_iN+1 if (iA==self.pm.restart_iA) else 1
+        trust_region = self.trust_region_function(H, beta, iN, y, arclength["iA"])
+        mu = 0.
 
-        for iN in range(start_iN, self.pm.N_newt):
-            # lda: lambda parameter, Re (Reynolds) if solver=='KolmogorovFlow', Ra (Rayleigh) if solver=='BOUSS'
-            U, T, sx, lda = self.unpack_X(X, arclength = True)
+        for iH in range(self.N_hook):
+            y, mu = trust_region(Delta, mu)
+            dx = Q@y
+            dU, dT, dsx, dlda = self.unpack_X(dx)
 
-            # Calculate A matrix for newton iteration
-            apply_A, UT = self.update_A_arc(X, dX_dr, iN, iA)
+            U_new = self.apply_proj(U, dU, self.sp2)
+            sx_new = sx + dsx.real if self.sx is not None else 0.
+            T_new = T + dT.real if self.T else self.Tconst
+            
+            X_new = super().form_X(U_new, T_new, sx_new)
+            
+            lda_new = lda + dlda.real
+            X_new = np.append(X_new, lda_new)
+            self.update_lda(lda_new)
 
-            # RHS of Newton extended system
-            # form b (rhs)
-            b = self.form_b(U, UT)
+            UT = self.evolve(U_new, T_new)
+            if self.sx is not None:
+                UT = self.translate(UT, sx_new)
 
-            # add arclength term
-            N = self.N_constraint(X, dX_dr, dr, X1)
+            b = self.form_b(U_new, UT)
+            N = self.N_constraint(X_new, arclength["dX_dr"], arclength["dr"], arclength["X1"])
             b = np.append(b, -N)
 
-            F = self.norm(b[:-1]) # F only includes diff between U and UT, not arclength constraint
+            F_new = self.norm(b)
+            lin_exp = self.norm(beta - self.c * H @ y)
 
-            # Write to txts
-            self.write_newton(iN, F, U, sx, T, (lda*self.pm.norm, N), iA)
+            self.write_hookstep(iN, iH, F_new, lin_exp, arclength["iA"])
+
+            if F_new <= lin_exp:
+                break
+            else:
+                Delta *= self.reduc_reg
+                
+        return X_new, F_new, UT
+
+    def write_header_newton(self, iA: int | None = None):
+        path = self._get_path(self.newton_dir, "newton.txt", iA=iA)
+        if path:
+            print("iN, |F|, T, sx, |U|, lambda, N(X)", file=open(path, "a"))
+
+    def write_newton(self, iN, F, U, sx, T, arclength_info: tuple, iA: int | None = None):
+        path = self._get_path(self.newton_dir, "newton.txt", iA=iA)
+        if path:
+            lda_scaled, N_val = arclength_info
+            print(f"{iN-1:02},{F:.6e},{T},{sx:.8e},{self.norm(U):.6e},{lda_scaled},{N_val}", file=open(path, "a"))
+
+    def write_headers(self, iN, iA: int | None = None):
+        super().write_headers(iN, iA)
+        suffix = f'iN{iN:02}.txt'
+        apply_A_path = self._get_path(self.apply_A_dir, 'apply_A_'+suffix, iA=iA)
+        if apply_A_path:
+            header = "|U|, |dU|, |dUT/dU|, |dU/dt|, |dUT/dT|, |dU/ds|, |dUT/ds|, |dUT/dlda|, t_proj, Tx_proj, lda_proj"
+            print(header, file=open(apply_A_path, "w"))
+
+    def write_apply_A(self, iN, norms, t_proj, Tx_proj, lda_proj, iA: int | None = None):
+        path = self._get_path(self.apply_A_dir, f"apply_A_iN{iN:02}.txt", iA=iA)
+        if path:
+            content = ",".join([f"{norm:.4e}" for norm in norms]) + f",{t_proj:.4e},{Tx_proj:.4e},{lda_proj:.4e}"
+            print(content, file=open(path, "a"))
+
+    def update_lda(self, lda):
+        if self.solver.solver == 'KolmogorovFlow':
+            self.solver.pm.nu = 1 / lda  # Assigning directly to solver's pm since self.pm is removed
+        elif self.solver.solver == 'BOUSS':
+            self.solver.pm.ra = lda * self.norm_val
+        else:
+            raise Exception('Arclength only implemented for Kolmogorov and BOUSS')
+
+    def N_constraint(self, X, dX_dr, dr, X1):
+        return np.dot(dX_dr, (X - X1)) - dr * self.alpha**2
+
+    def update_A_arc(self, X, dX_dr, iN, iA: int | None):
+        U, T, sx, lda = self.unpack_X(X)
+        self.update_lda(lda)
+
+        UT = self.evolve(U, T, save=True, iN=iN-1, iA=iA)
+
+        if self.sx is not None:
+            UT = self.translate(UT, sx)
+            dUT_ds = self.deriv_U(UT, self.grid.kx)
+            dU_ds = self.deriv_U(U, self.grid.kx)
+        else:
+            dUT_ds = dU_ds = np.zeros_like(U)
+
+        if self.T is not None:
+            dUT_dT = self.evolve(UT, self.grid.dt)
+            dUT_dT = (dUT_dT - UT) / self.grid.dt
+            dU_dt = self.evolve(U, self.grid.dt)
+            dU_dt = (dU_dt - U) / self.grid.dt
+        else:
+            dUT_dT = dU_dt = np.zeros_like(U)
+
+        dlda = lda * 1e-3
+        self.update_lda(lda + dlda)
+        dUT_dlda = self.evolve(U, T)
+        if self.sx is not None:
+            dUT_dlda = self.translate(dUT_dlda, sx)
+        dUT_dlda = (dUT_dlda - UT) / dlda
+        self.update_lda(lda)
+
+        def apply_A(dX):
+            dU, dT, ds, dlda_val = self.unpack_X(dX)
+            epsilon = 1e-7 * self.norm(U) / self.norm(dU)
+            U_pert = self.apply_proj(U, epsilon * dU, self.sp1)
+
+            dUT_dU = self.evolve(U_pert, T)
+            if self.sx is not None:
+                dUT_dU = self.translate(dUT_dU, sx)
+            dUT_dU = (dUT_dU - UT) / epsilon
+
+            Tx_proj = np.dot(dU_ds.conj(), dU).real
+            t_proj = np.dot(dU_dt.conj(), dU).real
+            lda_proj = np.dot(dX_dr.conj(), dX).real
+
+            norms = [self.norm(U_) for U_ in [U, dU, dUT_dU, dU_dt, dUT_dT, dU_ds, dUT_ds, dUT_dlda]]
+            self.write_apply_A(iN, norms, t_proj, Tx_proj, lda_proj, iA)
+
+            LHS = dUT_dU - dU + dUT_ds*ds + dUT_dT*dT + dUT_dlda*dlda_val
+            if self.T is not None:
+                LHS = np.append(LHS, t_proj)
+            if self.sx is not None:
+                LHS = np.append(LHS, Tx_proj)
+            LHS = np.append(LHS, lda_proj)
+            
+            return LHS
+
+        return apply_A, UT
+
+    def run_arclength(self, X0, X1, X_restart=None, iA: int | None = None):
+        dr = np.linalg.norm(X1 - X0)
+        dX_dr = (X1 - X0) / dr
+        X = X_restart if X_restart is not None else X1
+
+        start_iN = self.restart_iN + 1 if (iA == self.restart_iA) else 1
+
+        for iN in range(start_iN, self.N_newt):
+            U, T, sx, lda = self.unpack_X(X)
+            apply_A, UT = self.update_A_arc(X, dX_dr, iN, iA)
+            b = self.form_b(U, UT)
+
+            N = self.N_constraint(X, dX_dr, dr, X1)
+            b = np.append(b, -N)
+            F = self.norm(b[:-1])
+
+            self.write_newton(iN, F, U, sx, T, (lda * self.norm_val, N), iA)
             self.write_headers(iN, iA)
 
-            # Perform GMRes iteration
-            # Returns H, beta, Q such that X = Q@y, y = H^(-1)@beta
-            H, beta, Q = GMRES(apply_A, b, self.pm.N_gmres, self.pm.tol_gmres, self.pm.gmres_dir, iN, iA)
+            H, beta, Q = GMRES(apply_A, b, self.N_gmres, self.tol_gmres, self.gmres_dir, iN, iA)
+            X, F_new, UT = self.hookstep(X, H, beta, Q, iN, arclength={'iA': iA, 'dX_dr': dX_dr, 'dr': dr, 'X1': X1})
+            U, T, sx, lda = self.unpack_X(X)
 
-            # Perform hookstep to adjust solution to trust region
-            X, F_new, UT = self.hookstep(X, H, beta, Q, iN, arclength = {'iA':iA, 'dX_dr':dX_dr, 'dr':dr, 'X1':X1})
-
-            # Update solution
-            U, T, sx, lda = self.unpack_X(X, arclength = True)
-
-            # Termination condition
-            if (F_new < self.pm.tol_newt) and ((F-F_new)/F < self.pm.tol_improve):
-                UT = self.evolve(U, T, save = True, iN = iN, iA = iA)
-                if self.pm.sx is not None:
+            if (F_new < self.tol_newt) and ((F - F_new) / F < self.tol_improve):
+                UT = self.evolve(U, T, save=True, iN=iN, iA=iA)
+                if self.sx is not None:
                     UT = self.translate(UT, sx)
+                    
                 b = self.form_b(U, UT)
-                # add arclength term
                 N = self.N_constraint(X, dX_dr, dr, X1)
                 b = np.append(b, -N)
-                F = self.norm(b[:-1]) # F only includes diff between U and UT, not arclength constraint
-                # Write to txts
-                self.write_newton(iN+1, F, U, sx, T, (lda*self.pm.norm, N), iA)
+                F = self.norm(b[:-1])
+                
+                self.write_newton(iN + 1, F, U, sx, T, (lda * self.norm_val, N), iA)
 
                 if iA is not None:
                     self.save_converged(X, iA)
                 return X
 
-    def save_converged(self, X, iA):
-        """Save converged solution fields and metadata."""
-        U, T, sx, lda = self.unpack_X(X, arclength=True)
+    def run_arc_auto(self, X0, X1, X_restart=None):
+        start_iA = max(2, self.restart_iA)
 
-        # Use parameter-driven converged directory
-        path = self._get_path(self.pm.converged_dir, "solver.txt", iA=iA)
-        os.makedirs(path, exist_ok=True)
-
-        solver_file = os.path.join(path, "solver.txt")
-        if iA == 0 and not os.path.exists(solver_file):
-            print("iA, T, sx, lda, |U|", file=open(solver_file, "a"))
-
-        print(f"{iA:02},{T},{sx:.8e},{lda*self.pm.norm},{self.norm(U):.6e}",
-            file=open(solver_file, "a"))
-
-        self.write_fields(U, idx=0, path=path)
-
-    def update_lda(self, lda):
-        '''Updates lambda parameter in solver. norm: normalization parameter'''
-        if self.solver.solver == 'KolmogorovFlow':
-            Re = lda # Reynolds number
-            self.pm.nu = 1 / Re
-        elif self.solver.solver == 'BOUSS':
-            Ra = lda # Rayleigh number
-            Ra *= self.pm.norm # to account for possible normalization
-            self.pm.ra = Ra
-        else:
-            raise Exception('Arclength only implemented for Kolmogorov and BOUSS')
-
-    def N_constraint(self, X, dX_dr, dr, X1):
-        '''Calculates N function resulting from the arclength constraint as in
-        'Chandler - Kerswell: Invariant recurrent solutions..' '''
-        alpha = getattr(self.pm, 'alpha', 1.) # parametrization velocity. default = 1.
-        return np.dot(dX_dr, (X-X1)) - dr * alpha**2
-
-    def update_A_arc(self, X, dX_dr, iN, iA: int|None):
-        '''Creates (extended) Jacobian matrix to be applied to U throughout GMRes'''
-        # Compute variables and derivatives used throughout gmres iterations
-        U, T, sx, lda = self.unpack_X(X, arclength = True)
-
-        # Update lambda
-        self.update_lda(lda)
-
-        # Evolve fields and save output
-        UT = self.evolve(U, T, save = True, iN = iN-1, iA = iA)
-
-        # Translate UT by sx and calculate derivatives
-        if self.pm.sx is not None:
-            UT = self.translate(UT, sx)
-
-            dUT_ds = self.deriv_U(UT, self.grid.kx)
-            dU_ds = self.deriv_U(U, self.grid.kx)
-        else:
-            dUT_ds = dU_ds = np.zeros_like(U) # No translation if sx is None
-
-        # Calculate derivatives in time
-        if self.pm.T is not None:
-            dUT_dT = self.evolve(UT, self.solver.pm.dt)
-            dUT_dT = (dUT_dT - UT)/self.solver.pm.dt
-
-            dU_dt = self.evolve(U, self.solver.pm.dt)
-            dU_dt = (dU_dt - U)/self.solver.pm.dt
-        else:
-            dUT_dT = dU_dt = np.zeros_like(U) # No evol if T is None
-
-        # Calculate derivative of evolved translated fields wrt lambda
-        dlda = lda * 1e-3
-        self.update_lda(lda + dlda)
-        dUT_dlda = self.evolve(U, T)
-        dUT_dlda = self.translate(dUT_dlda,sx)
-        dUT_dlda = (dUT_dlda - UT)/dlda
-
-        # Return lambda to previous state
-        self.update_lda(lda)
-
-        def apply_A(dX):
-            ''' Applies A (extended Jacobian) to vector X^t  '''
-            dU, dT, ds, dlda = self.unpack_X(dX, arclength = True)
-
-            # 1e-7 factor chosen to balance accuracy and numerical stability
-            epsilon = 1e-7*self.norm(U)/self.norm(dU)
-
-            # Perturb U by epsilon*dU and apply solenoidal projection if sp1 = True
-            U_pert = self.apply_proj(U, epsilon*dU, self.pm.sp1)
-
-            # Calculate derivative w.r.t. initial fields
-            dUT_dU = self.evolve(U_pert, T)
-            if self.pm.sx is not None:
-                dUT_dU = self.translate(dUT_dU,sx)
-            dUT_dU = (dUT_dU - UT)/epsilon
-
-            # Calculate projections of dU needed for extended Newton system
-            Tx_proj = np.dot(dU_ds.conj(), dU).real
-            t_proj = np.dot(dU_dt.conj(), dU).real
-            lda_proj = np.dot(dX_dr.conj(), dX).real
-
-            # Save norms for diagnostics
-            norms = [self.norm(U_) for U_ in [U, dU, dUT_dU, dU_dt, dUT_dT, dU_ds, dUT_ds, dUT_dlda]]
-
-            self.write_apply_A(iN, norms, t_proj, Tx_proj, lda_proj, iA)
-
-            # LHS of extended Newton system
-            LHS = dUT_dU - dU + dUT_ds*ds + dUT_dT*dT + dUT_dlda*dlda
-            if self.pm.T is not None:
-                LHS = np.append(LHS, t_proj)
-            if self.pm.sx is not None:
-                LHS = np.append(LHS, Tx_proj)
-            # Add arclength term
-            LHS = np.append(LHS, lda_proj)
-
-            return LHS
-
-        return apply_A, UT
-
-    def run_arc_auto(self, X0, X1, X_restart = None):
-        '''Iterates Newton-GMRes solver until convergence using arclength continuation
-        Once a solution has converged it automatically uses the new converged solution as
-        the new starting point
-        '''
-        start_iA = max(2, self.pm.restart_iA)
-
-        for iA in range(start_iA, self.pm.N_arc):
-            if (self.pm.restart_iN == 0) or (iA != start_iA):
-                self.write_header_newton(iA = iA)
+        for iA in range(start_iA, self.N_arc):
+            if (self.restart_iN == 0) or (iA != start_iA):
+                self.write_header_newton(iA=iA)
 
             X = self.run_arclength(X0, X1, X_restart, iA)
             X0 = X1
             X1 = X
             X_restart = None
+
+    def save_converged(self, X, iA):
+        U, T, sx, lda = self.unpack_X(X)
+        path = self._get_path(self.converged_dir, "solver.txt", iA=iA)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        if iA == 0 and not os.path.exists(path):
+            print("iA, T, sx, lda, |U|", file=open(path, "a"))
+
+        print(f"{iA:02},{T},{sx:.8e},{lda * self.norm_val},{self.norm(U):.6e}", file=open(path, "a"))
+        self.write_fields(U, idx=0, path=os.path.dirname(path))
