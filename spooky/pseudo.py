@@ -208,7 +208,7 @@ class Grid3D(Grid1D):
         kj = xnp.fft.fftfreq(Ny, 1/Ny)
         kl = xnp.fft.rfftfreq(Nz, 1/Nz)
         ki, kj, kl = xnp.meshgrid(ki, kj, kl, indexing='ij')
-        kr = (ki/Nx)**2 + (kj/Ny)**2 + (kz/Nz)**2
+        kr = (ki/Nx)**2 + (kj/Ny)**2 + (kl/Nz)**2
 
         self.Lx = Lx
         self.Ly = Ly
