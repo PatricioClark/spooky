@@ -164,7 +164,8 @@ class DynSys():
 
         return eigval_H, eigvec_H, Q
 
-    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random', return_hist=False):
+    def lyapunov_exponents(self, fields, T, n, nsteps, tol=1e-10, ep0=1e-7, sx=None, b='random', return_hist=False,
+                           checkpoint_every=None, checkpoint_path='lyap_checkpoint.npz', restart=False):
         ''' Computes Lyapunov exponents and Kaplan–Yorke dimension via QR iteration.
 
         This method implements the Benettin algorithm for estimating finite-time
@@ -190,8 +191,15 @@ class DynSys():
             Translation in x direction (for translationally invariant systems).
         b : str or np.ndarray, optional
             Initial perturbation seed ('random', 'U', 'phases', or user-defined array).
+            Ignored if restart=True.
         return_hist : bool, optional
             If True, also returns the history of Lyapunov exponents at each step.
+        checkpoint_every : int or None, optional
+            If set, saves checkpoint (U, Q, le_sum, le_hist, step) every this many steps.
+        checkpoint_path : str, optional
+            Path to checkpoint file. Default is 'lyap_checkpoint.npz'.
+        restart : bool, optional
+            If True, loads state from checkpoint_path and resumes from there.
 
         Returns
         -------
@@ -214,30 +222,40 @@ class DynSys():
                 dUT_dU = self.translate(dUT_dU, sx)
             return dUT_dU / epsilon
 
-        # --- Initialize orthonormal basis Q ---
-        if isinstance(b, str):
-            if b == 'U':
-                b = U.copy()
-            elif b == 'random':
-                b = np.random.randn(len(U))
-            elif b == 'phases':
-                b = self.phase_shifted_b(fields)
-        elif not isinstance(b, np.ndarray):
-            raise ValueError("b must be 'U', 'random', 'phases', or a NumPy array.")
+        # --- Initialize or restore state ---
+        if restart:
+            ckpt = np.load(checkpoint_path)
+            U = ckpt['U']
+            Q = ckpt['Q']
+            le_sum = ckpt['le_sum']
+            le_hist = ckpt['le_hist']
+            start_step = int(ckpt['step']) + 1
+            print(f"Restarting from checkpoint '{checkpoint_path}' at step {start_step}/{nsteps}")
+        else:
+            if isinstance(b, str):
+                if b == 'U':
+                    b = U.copy()
+                elif b == 'random':
+                    b = np.random.randn(len(U))
+                elif b == 'phases':
+                    b = self.phase_shifted_b(fields)
+            elif not isinstance(b, np.ndarray):
+                raise ValueError("b must be 'U', 'random', 'phases', or a NumPy array.")
 
-        Q = np.zeros((len(U), n))
-        Q[:, 0] = b / np.linalg.norm(b)
-        for i in range(1, n):
-            q = np.random.randn(len(U))
-            for j in range(i):
-                q -= np.dot(Q[:, j], q) * Q[:, j]
-            Q[:, i] = q / np.linalg.norm(q)
+            Q = np.zeros((len(U), n))
+            Q[:, 0] = b / np.linalg.norm(b)
+            for i in range(1, n):
+                q = np.random.randn(len(U))
+                for j in range(i):
+                    q -= np.dot(Q[:, j], q) * Q[:, j]
+                Q[:, i] = q / np.linalg.norm(q)
+
+            le_sum = np.zeros(n)
+            le_hist = np.zeros((nsteps, n))
+            start_step = 0
 
         # --- Accumulate finite-time Lyapunov exponents ---
-        le_sum = np.zeros(n)
-        le_hist = np.zeros((nsteps, n))  # le vs time
-
-        for step in range(nsteps):
+        for step in range(start_step, nsteps):
             # Propagate basis vectors through tangent map
             V = np.zeros_like(Q)
             Uevol = self.evolve(U, T)
@@ -249,17 +267,24 @@ class DynSys():
             diagR = np.abs(np.diag(R))
             le_sum += np.log(diagR + 1e-300)  # prevent log(0)
 
-            # Store running average of Lyapunov exponents 
+            # Store running average of Lyapunov exponents
             t = (step + 1) * T
             le_running = le_sum / t
-            le_running = np.sort(le_running)[::-1] # sort in descending order
+            le_running = np.sort(le_running)[::-1]  # sort in descending order
             le_hist[step, :] = le_running
+
+            if (step + 1) % 10 == 0:
+                print(f"step {step+1}/{nsteps}  le = {np.array2string(le_running, precision=6, separator=', ')}")
 
             # Re-normalize columns to avoid drift
             for i in range(n):
                 Q[:, i] /= np.linalg.norm(Q[:, i])
 
             U = np.copy(Uevol)
+
+            if checkpoint_every is not None and (step + 1) % checkpoint_every == 0:
+                np.savez(checkpoint_path, U=U, Q=Q, le_sum=le_sum, le_hist=le_hist, step=step)
+                print(f"  checkpoint saved to '{checkpoint_path}'")
 
         # --- Average over total time ---
         lyap_exponents = le_sum / (nsteps * T)
