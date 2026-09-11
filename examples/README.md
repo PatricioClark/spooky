@@ -6,6 +6,8 @@ Examples and use cases.
     - Forward evolution of 1D Kuramoto-Sivashinsky equation
 - kolmogorov:
     - Forward evolution of 2D Kolmogorov flow
+- swhd_1d:
+    - Forward evolution of 1D shallow water equations over topography
 - newton_kolmog: 
     - Example on Kolmogorov flow, orb05
 - newton_RB:

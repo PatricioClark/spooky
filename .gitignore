@@ -23,3 +23,6 @@ venv/
 .idea/
 *.swp
 *~
+
+# Example outputs
+examples/*/outs/
